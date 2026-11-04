@@ -20,15 +20,25 @@ const left = (iso: string | undefined, now: number) => {
     : ` · ${Math.floor(s / 3600)}ч ${Math.floor((s % 3600) / 60)}м`
 }
 
+const summary = (rows: Limit[]) => {
+  const parts = rows
+    .filter(l => LABELS[l.kind])
+    .map(l => `${LABELS[l.kind]} ${Math.round(l.percentUsed)}%`)
+  return parts.length ? `Лимиты: ${parts.join(' · ')}` : 'Лимиты: нет данных'
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const u = await $.session.usage()
     await update($, limits, () => u.rateLimits)
+    $.ui.status(summary(u.rateLimits))
+    $.ui.toast(`limit-bars загружен. ${summary(u.rateLimits)}`)
     return next(e)
   })
 
   on('session.measure', async ($, e, next) => {
     await update($, limits, () => e.rateLimits)
+    $.ui.status(summary(e.rateLimits))
     return next(e)
   })
 

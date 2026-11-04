@@ -20,15 +20,28 @@ const left = (iso: string | undefined, now: number) => {
     : ` · ${Math.floor(s / 3600)}ч ${Math.floor((s % 3600) / 60)}м`
 }
 
+// Plain-text bars for the status line: AbovePrompt is not drawn on mobile.
+const statusText = (rows: Limit[], now: number) =>
+  rows
+    .filter(l => LABELS[l.kind])
+    .map(l => {
+      const pct = Math.max(0, Math.min(100, Math.round(l.percentUsed)))
+      const filled = Math.round((pct * WIDTH) / 100)
+      return `${LABELS[l.kind]} ${'█'.repeat(filled)}${'░'.repeat(WIDTH - filled)} ${pct}%${left(l.resetsAt, now)}`
+    })
+    .join('  │  ')
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const u = await $.session.usage()
     await update($, limits, () => u.rateLimits)
+    $.ui.status(statusText(u.rateLimits, await $.clock.now()) || undefined)
     return next(e)
   })
 
   on('session.measure', async ($, e, next) => {
     await update($, limits, () => e.rateLimits)
+    $.ui.status(statusText(e.rateLimits, await $.clock.now()) || undefined)
     return next(e)
   })
 

@@ -1,0 +1,11 @@
+{
+  "name": "limit-bars",
+  "owner": { "name": "davidsoloviov2006-debug" },
+  "plugins": [
+    {
+      "name": "limit-bars",
+      "source": "./plugins/limit-bars",
+      "description": "Bars for the 5-hour and weekly plan limits above the prompt"
+    }
+  ]
+}

@@ -224,7 +224,8 @@ const logged = (d) => peekDay(d).entries.length > 0;
 function streak() { let d = dk(), n = 0; if (!logged(d)) d = addDays(d, -1); while (logged(d)) { n++; d = addDays(d, -1); } return n; }
 
 // ---------- UI-каркас ----------
-let tab = 'diary';
+let tab = 'today';
+let progSeg = 'reports';
 let cur = dk();
 let reportDays = 7;
 function toast(msg) {
@@ -273,7 +274,7 @@ function render() {
   $$('.nav-btn').forEach((b) => { b.classList.toggle('active', b.dataset.tab === tab); b.querySelector('span').textContent = t('tab.' + b.dataset.tab); });
   $('#fab').setAttribute('aria-label', t('addFood'));
   const v = $('#view');
-  v.innerHTML = ({ diary: viewDiary, reports: viewReports, progress: viewProgress, profile: viewProfile })[tab]();
+  v.innerHTML = ({ today: viewToday, diary: viewDiary, progress: () => progHead() + (progSeg === 'reports' ? viewReports() : viewProgress()), profile: viewProfile })[tab]();
   bindView(v);
 }
 function ring(val, max, size = 132, stroke = 12, color = 'var(--accent)', over = false) {
@@ -353,6 +354,7 @@ function viewDiary() {
 }
 
 // ---------- отчёты ----------
+const progHead = () => `<header class="topbar"><h1 class="grow">${t('tab.progress')}</h1></header><div class="seg">${['reports', 'body'].map((k) => `<button class="${progSeg === k ? 'on' : ''}" data-act="progSeg" data-v="${k}">${t('pseg.' + k)}</button>`).join('')}</div>`;
 function viewReports() {
   const G = goalG(); const days = []; for (let i = reportDays - 1; i >= 0; i--) days.push(addDays(dk(), -i));
   const data = days.map((d) => ({ d, T: dayTotals(d), n: peekDay(d).entries.length }));
@@ -370,7 +372,6 @@ function viewReports() {
   const top = {}; days.forEach((d) => peekDay(d).entries.forEach((e) => { const k = entryName(e); top[k] = (top[k] || 0) + entryN(e).kcal; }));
   const topL = Object.entries(top).sort((a, b) => b[1] - a[1]).slice(0, 6);
   return `
-  <header class="topbar"><h1 class="grow">${t('tab.reports')}</h1></header>
   <div class="seg">${[7, 30, 90].map((n) => `<button class="${reportDays === n ? 'on' : ''}" data-act="rdays" data-n="${n}">${t('days' + n)}</button>`).join('')}</div>
   <div class="kpis">
     <div class="kpi card"><small>${t('avgKcal')}</small><b>${fmtInt(avg.kcal)}</b><span>${t('goal')} ${fmtInt(G.kcal)}</span></div>
@@ -426,7 +427,6 @@ function viewProgress() {
   }
   const F = S.fast; const now = Date.now(); const el = F.start ? (now - F.start) / 36e5 : 0;
   return `
-  <header class="topbar"><h1 class="grow">${t('tab.progress')}</h1></header>
   <section class="card">
     <div class="w-head"><div><small class="muted">${t('weightNow')}</small><b class="big">${r1(last)}<small> ${t('kg')}</small></b></div>
       <div class="w-stats"><span>${t('change')} <b class="${last - first <= 0 ? 'good' : ''}">${last - first > 0 ? '+' : ''}${r1(last - first)}</b></span><span>${t('target')} <b>${S.profile.target || '—'}</b></span>
@@ -535,8 +535,10 @@ A.copyMeal = (el) => {
   const D = day(cur); src.forEach((e) => D.entries.push({ ...e, id: uid(), ts: Date.now() })); save(); toast(t('copied')); render();
 };
 A.editEntry = (el) => { const e = peekDay(cur).entries.find((x) => x.id === el.dataset.id); if (e) openFood(null, { entry: e }); };
-A.addEx = () => openExercise();
-A.delEx = (el) => confirmBox(t('delActivity'), t('delete'), () => { const D = day(cur); D.ex = (D.ex || []).filter((x) => x.id !== el.dataset.id); save(); render(); });
+A.addEx = () => openExercise(tab === 'today' ? dk() : cur);
+A.checkin = () => openCheckin();
+A.progSeg = (el) => { progSeg = el.dataset.v; render(); };
+A.delEx = (el) => confirmBox(t('delActivity'), t('delete'), () => { const D = day(el.dataset.d || cur); D.ex = (D.ex || []).filter((x) => x.id !== el.dataset.id); save(); render(); });
 A.rdays = (el) => { reportDays = +el.dataset.n; render(); };
 A.csv = () => exportCsv();
 A.addWeight = () => {
@@ -892,25 +894,138 @@ function openQuick(entry) {
   });
 }
 
-// активность вручную
-const EX = [['walk', 3.5], ['run', 9.8], ['gym', 5], ['bike', 7.5], ['swim', 7], ['yoga', 2.5], ['other', 4]];
-function openExercise() {
-  let type = 'walk';
-  openSheet(`<h2>${icon('run')} ${t('activity')}</h2>
-    <p class="muted small">${t('exWatchHint')}</p>
+// ---------- активность / тренировки (длительность × интенсивность) ----------
+const EX = [['walk', 3.5], ['run', 9.8], ['gym', 5], ['bike', 7.5], ['swim', 7], ['yoga', 2.5], ['team', 7], ['other', 4]];
+function openExercise(d = cur) {
+  let type = 'gym', rpe = 6;
+  openSheet(`<h2>${icon('run')} ${t('workout')}</h2>
     <div class="chips center">${EX.map(([k]) => `<button class="chip ${k === type ? 'on' : ''}" data-k="${k}">${t('ex.' + k)}</button>`).join('')}</div>
-    <div class="grid2"><label class="fld"><span>${t('minutes')}</span><input class="input" id="xm" inputmode="numeric" placeholder="30"></label>
+    <div class="grid2"><label class="fld"><span>${t('minutes')}</span><input class="input" id="xm" inputmode="numeric" placeholder="45"></label>
     <label class="fld"><span>${t('kcal')}</span><input class="input" id="xk" inputmode="numeric" placeholder="${t('auto')}"></label></div>
+    <div class="fld"><span>${t('intensity')}: <b id="rpeV"></b></span><div class="scale10">${Array.from({ length: 10 }, (_, i) => `<button data-r="${i + 1}">${i + 1}</button>`).join('')}</div></div>
+    <p class="muted small">${t('rpeHint')}</p>
     <button class="btn accent wide" id="ok">${t('add')}</button>`, {
     onMount: (b) => {
-      const est = () => { const met = EX.find((x) => x[0] === type)[1]; const m = num($('#xm', b).value); $('#xk', b).placeholder = m ? r0(met * S.profile.weight * m / 60) : t('auto'); };
-      b.querySelectorAll('.chip').forEach((x) => x.onclick = () => { type = x.dataset.k; b.querySelectorAll('.chip').forEach((y) => y.classList.toggle('on', y === x)); est(); });
-      $('#xm', b).addEventListener('input', est);
+      const kcalOf = () => { const met = EX.find((x) => x[0] === type)[1] * (0.6 + rpe / 12.5); return r0(met * S.profile.weight * num($('#xm', b).value) / 60); };
+      const upd = () => { $('#xk', b).placeholder = num($('#xm', b).value) ? kcalOf() : t('auto'); $('#rpeV', b).textContent = `${rpe} · ${t(rpe <= 3 ? 'rpeEasy' : rpe <= 6 ? 'rpeMod' : rpe <= 8 ? 'rpeHard' : 'rpeMax')}`; $$('.scale10 button', b).forEach((x) => x.classList.toggle('on', +x.dataset.r === rpe)); };
+      b.querySelectorAll('.chip').forEach((x) => x.onclick = () => { type = x.dataset.k; b.querySelectorAll('.chip').forEach((y) => y.classList.toggle('on', y === x)); upd(); });
+      $$('.scale10 button', b).forEach((x) => x.onclick = () => { rpe = +x.dataset.r; haptic(); upd(); });
+      $('#xm', b).addEventListener('input', upd);
       b.querySelector('#ok').onclick = () => {
-        const m = num($('#xm', b).value); let k = num($('#xk', b).value);
-        if (!k) k = EX.find((x) => x[0] === type)[1] * S.profile.weight * m / 60;
-        if (!k) return toast(t('enterKcal'));
-        const D = day(cur); (D.ex ||= []).push({ id: uid(), name: t('ex.' + type), min: m, kcal: r0(k) }); save(); closeAll(); render();
+        const m = num($('#xm', b).value); if (!m) return toast(t('enterMinutes'));
+        const k = num($('#xk', b).value) || kcalOf();
+        const D = day(d); (D.ex ||= []).push({ id: uid(), name: t('ex.' + type), min: m, kcal: r0(k), rpe }); save(); closeAll(); render();
+      };
+      upd();
+    },
+  });
+}
+
+// ---------- «Сегодня»: восстановление, нагрузка, сон ----------
+const SLEEP_NEED = 8;
+const hm = (s) => { const [h, m] = String(s || '').split(':').map(Number); return isFinite(h) ? h + (m || 0) / 60 : null; };
+const fmtH = (h) => `${Math.floor(h)}:${pad(Math.round((h % 1) * 60) % 60)}`;
+function sleepH(s) { if (!s) return null; const b = hm(s.bed), w = hm(s.wake); if (b == null || w == null) return null; let x = w - b; if (x <= 0) x += 24; return x; }
+const nightOf = (d) => sleepH(peekDay(d).sleep); // сон, закончившийся утром дня d
+function loadOf(d) {
+  const D = peekDay(d);
+  const ex = (D.ex || []).reduce((s, e) => s + (+e.min || (+e.kcal || 0) / 6) * (+e.rpe || 5), 0);
+  return ex + (+D.health?.steps || 0) / 100 + (+D.health?.ae || 0) / 4;
+}
+const strainPct = (d) => r0(100 * (1 - Math.exp(-loadOf(d) / 450)));
+function sleepNeed(d) { const y = strainPct(addDays(d, -1)); return SLEEP_NEED + (y > 70 ? 0.5 : 0); }
+function sleepDebt(d) { let debt = 0; for (let i = 0; i < 7; i++) { const x = addDays(d, -i), h = nightOf(x); if (h != null) debt += Math.max(0, sleepNeed(x) - h); } return debt; }
+function acwr(d) {
+  const first = Object.keys(S.days).sort()[0];
+  if (!first || (parseDk(d) - parseDk(first)) / 864e5 < 21) return null; // нужна история хотя бы 3 недели
+  let a = 0, c = 0; for (let i = 0; i < 28; i++) { const l = loadOf(addDays(d, -i - 1)); if (i < 7) a += l; c += l; }
+  a /= 7; c /= 28; return c > 20 ? a / c : null;
+}
+function recovery(d) {
+  const D = peekDay(d), ch = D.check, h = nightOf(d);
+  if (!ch && h == null) return null;
+  const parts = [];
+  if (h != null) { const s = Math.min(1, h / sleepNeed(d)) * (0.7 + 0.3 * ((D.sleep.q || 3) / 5)); parts.push(['rcSleep', s, 0.45]); }
+  if (ch) { parts.push(['rcFeel', ((ch.energy || 3) + (6 - (ch.sore || 3)) + (6 - (ch.stress || 3))) / 15, 0.35]); }
+  const r = acwr(d); const yS = strainPct(addDays(d, -1));
+  let lf = 1; if (r != null && r > 1.3) lf -= Math.min(0.6, (r - 1.3) * 1.2); if (yS > 80) lf -= 0.25;
+  parts.push(['rcLoad', clamp(lf, 0, 1), 0.12]);
+  const y = addDays(d, -1); if (logged(y)) { const T = dayTotals(y), G = goalG(); const nf = 0.6 * Math.min(1, T.p / G.p) + 0.4 * (Math.abs(T.kcal - G.kcal) <= G.kcal * 0.2 ? 1 : 0.5); parts.push(['rcFood', nf, 0.08]); }
+  if (ch?.rhr) { const base = []; for (let i = 1; i <= 14; i++) { const x = peekDay(addDays(d, -i)).check?.rhr; if (x) base.push(x); } if (base.length >= 3) { const avg = base.reduce((a, b) => a + b) / base.length; parts.push(['rcRhr', clamp(0.5 - (ch.rhr - avg) / 10, 0, 1), 0.15]); } }
+  const W = parts.reduce((s, p) => s + p[2], 0);
+  return { score: r0(100 * parts.reduce((s, p) => s + p[1] * p[2], 0) / W), parts: parts.map(([k, v, w]) => [k, r0(v * 100), r0(w / W * 100)]) };
+}
+const zone = (x) => (x >= 67 ? 'g' : x >= 34 ? 'y' : 'r');
+const ZC = { g: 'var(--accent)', y: 'var(--f)', r: 'var(--danger)' };
+function scoreRing(val, label, sub, color, max = 100) {
+  return `<div class="score"><div class="ring-wrap">${ring(val ?? 0, max, 96, 9, color)}<div class="ring-c"><b>${val == null ? '—' : val}</b></div></div><span>${label}</span><small>${sub}</small></div>`;
+}
+function viewToday() {
+  const d = dk(), D = peekDay(d), rc = recovery(d), st = strainPct(d), h = nightOf(d), need = sleepNeed(d);
+  const z = rc ? zone(rc.score) : null;
+  const target = z === 'g' ? [60, 85] : z === 'y' ? [40, 60] : z === 'r' ? [0, 35] : null;
+  const T = dayTotals(d), G = goalG(), act = S.settings.countExercise ? burned(d) : 0, left = G.kcal + act - T.kcal;
+  const hr = new Date().getHours();
+  const nights = Array.from({ length: 7 }, (_, i) => addDays(d, i - 6));
+  const recs = nights.map((x) => recovery(x)?.score ?? null);
+  return `
+  <header class="topbar"><div class="grow"><small class="muted">${fmtDate(d, { weekday: 'long', day: 'numeric', month: 'long' })}</small><h1>${t(hr < 12 ? 'hiMorning' : hr < 18 ? 'hiDay' : 'hiEvening')}</h1></div>${streak() ? `<span class="streak">${icon('flame')} ${streak()}</span>` : ''}</header>
+  ${!D.check ? `<button class="card checkin-cta" data-act="checkin"><span class="meal-ic hl">${icon('sun')}</span><div class="grow"><h3>${t('checkinT')}</h3><small class="muted">${t('checkinS')}</small></div>${icon('right', 'flip muted')}</button>` : ''}
+  <section class="card scores">
+    ${scoreRing(rc?.score ?? null, t('recovery'), rc ? t('z' + z) : t('needCheckin'), rc ? ZC[z] : 'var(--faint)')}
+    ${scoreRing(st, t('strain'), target ? `${t('target2')} ${target[0]}–${target[1]}` : t('today'), 'var(--c)')}
+    ${scoreRing(h == null ? null : r0(h / need * 100), t('sleep'), h == null ? t('noSleep') : fmtH(h), '#ab97ef')}
+  </section>
+  ${rc ? `<section class="card advice z-${z}"><h3>${t('adv' + z + 'T')}</h3><p>${t('adv' + z, { a: target[0], b: target[1] })}</p>
+    <details><summary>${t('howCalc')}</summary>${rc.parts.map(([k, v, w]) => `<div class="li"><span class="grow">${t(k)}</span><b>${v}%</b><small class="muted">&nbsp;× ${w}%</small></div>`).join('')}<p class="muted small">${t('rcNote')}</p></details>
+    <button class="link-btn" data-act="checkin">${icon('edit')} ${t('editCheckin')}</button></section>` : ''}
+  <section class="card">
+    <header class="meal-h"><span class="meal-ic sl">${icon('moon')}</span><h3 class="grow">${t('sleep')}</h3><span class="meal-k">${h == null ? '' : `<b>${fmtH(h)}</b> / ${fmtH(need)}`}</span></header>
+    <div class="nights">${nights.map((x) => { const v = nightOf(x); const p = v == null ? 0 : clamp(v / 10 * 100, 4, 100); return `<div class="night ${x === d ? 'cur' : ''}"><i style="height:${p}%" class="${v != null && v < sleepNeed(x) - 1 ? 'low' : ''}"></i><span>${fmtDate(x, { weekday: 'narrow' })}</span></div>`; }).join('')}</div>
+    <div class="mini-row"><span>${t('sleepDebt')} <b>${fmtH(sleepDebt(d))}</b></span>${D.sleep ? `<span>${t('quality')} <b>${'★'.repeat(D.sleep.q || 0)}</b></span>` : ''}</div>
+  </section>
+  <section class="card">
+    <header class="meal-h"><span class="meal-ic ex">${icon('run')}</span><h3 class="grow">${t('strain')}</h3><span class="meal-k"><b>${st}%</b></span><button class="add-btn" data-act="addEx" aria-label="add">${icon('plus')}</button></header>
+    ${D.health ? `<div class="entry static"><div class="grow"><div class="e-name">${t('appleHealth')}</div><div class="e-sub">${fmtInt(D.health.steps)} ${t('steps')}</div></div><div class="e-kcal act">${fmtInt(D.health.ae)}</div></div>` : ''}
+    ${(D.ex || []).map((e) => `<button class="entry" data-act="delEx" data-id="${e.id}" data-d="${d}"><div class="grow"><div class="e-name">${esc(e.name)}</div><div class="e-sub">${e.min ? `${e.min} ${t('min')}` : ''}${e.rpe ? ` · ${t('intensity')} ${e.rpe}/10` : ''}</div></div><div class="e-kcal act">${fmtInt(e.kcal)}</div></button>`).join('') || (!D.health ? `<p class="muted small">${t('noWorkouts')}</p>` : '')}
+    ${(() => { const r = acwr(d); return r == null ? '' : `<div class="mini-row"><span>${t('acwr')} <b class="${r > 1.3 ? 'warn-t' : r < 0.8 ? '' : 'good'}">${r1(r)}</b></span><span class="muted">${t(r > 1.3 ? 'acwrHigh' : r < 0.8 ? 'acwrLow' : 'acwrOk')}</span></div>`; })()}
+  </section>
+  <button class="card" data-act="tab" data-tab="diary">
+    <header class="meal-h"><span class="meal-ic snack">${icon('apple')}</span><h3 class="grow">${t('nutrition')}</h3><span class="meal-k"><b>${fmtInt(Math.abs(left))}</b> ${left >= 0 ? t('left') : t('over')}</span>${icon('right', 'flip muted')}</header>
+    <div class="macros flat">${macroBar(t('protein'), T.p, G.p, 'p')}${macroBar(t('carbs'), T.c, G.c, 'c')}</div>
+    ${st >= 60 ? `<p class="muted small">${t('hardDayFood', { n: r0(G.p * 1.1) })}</p>` : ''}
+  </button>
+  <section class="card"><h3>${t('recovery7')}</h3>
+    <div class="nights rec">${nights.map((x, i) => { const v = recs[i]; return `<div class="night"><i style="height:${v == null ? 0 : Math.max(4, v)}%;background:${v == null ? 'transparent' : ZC[zone(v)]}"></i><span>${fmtDate(x, { weekday: 'narrow' })}</span></div>`; }).join('')}</div>
+  </section>
+  <p class="muted small center">${t('betaNote')}</p>
+  <div class="spacer"></div>`;
+}
+function openCheckin() {
+  const d = dk(), D = peekDay(d), prev = peekDay(addDays(d, -1));
+  const sl = D.sleep || { bed: prev.sleep?.bed || '23:30', wake: prev.sleep?.wake || '07:00', q: 3 };
+  const ch = D.check || { energy: 3, sore: 2, stress: 2 };
+  const scale = (id, v, lo, hi) => `<div class="fld"><span>${t(id)}</span><div class="scale5" data-k="${id}">${[1, 2, 3, 4, 5].map((i) => `<button data-v="${i}" class="${i === v ? 'on' : ''}">${i}</button>`).join('')}</div><div class="scale-l"><small>${t(lo)}</small><small>${t(hi)}</small></div></div>`;
+  openSheet(`<h2>${icon('sun')} ${t('checkinT')}</h2>
+    <div class="grid2"><label class="fld"><span>${t('bedTime')}</span><input class="input" type="time" id="cb" value="${sl.bed}"></label><label class="fld"><span>${t('wakeTime')}</span><input class="input" type="time" id="cw" value="${sl.wake}"></label></div>
+    <p class="muted small" id="sdur"></p>
+    ${scale('sleepQ', sl.q, 'qBad', 'qGood')}
+    ${scale('energy', ch.energy, 'eLow', 'eHigh')}
+    ${scale('soreness', ch.sore, 'sNone', 'sStrong')}
+    ${scale('stress', ch.stress, 'sNone', 'sStrong')}
+    <label class="fld"><span>${t('rhr')}</span><input class="input" id="crhr" inputmode="numeric" placeholder="${t('optional')}" value="${ch.rhr || ''}"></label>
+    <p class="muted small">${t('rhrHint')}</p>
+    <button class="btn accent wide" id="ok">${t('save')}</button>`, {
+    onMount: (b) => {
+      const vals = { sleepQ: sl.q, energy: ch.energy, soreness: ch.sore, stress: ch.stress };
+      const dur = () => { const h = sleepH({ bed: $('#cb', b).value, wake: $('#cw', b).value }); $('#sdur', b).textContent = h ? `${t('sleep')}: ${fmtH(h)}` : ''; };
+      $$('.scale5', b).forEach((g) => g.querySelectorAll('button').forEach((x) => x.onclick = () => { vals[g.dataset.k] = +x.dataset.v; g.querySelectorAll('button').forEach((y) => y.classList.toggle('on', y === x)); haptic(); }));
+      $('#cb', b).addEventListener('input', dur); $('#cw', b).addEventListener('input', dur); dur();
+      $('#ok', b).onclick = () => {
+        const DD = day(d);
+        DD.sleep = { bed: $('#cb', b).value, wake: $('#cw', b).value, q: vals.sleepQ };
+        DD.check = { energy: vals.energy, sore: vals.soreness, stress: vals.stress, rhr: num($('#crhr', b).value) || 0 };
+        save(); closeAll(); render(); haptic(20);
       };
     },
   });
@@ -1125,7 +1240,7 @@ function init() {
   applyLang(); applyTheme();
   matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
   $('#fab').onclick = () => { haptic(); openAdd({}); };
-  setInterval(() => { if (tab === 'progress' && S.fast.start && !sheets.length) render(); }, 30000);
+  setInterval(() => { if (tab === 'progress' && progSeg === 'body' && S.fast.start && !sheets.length) render(); }, 30000);
   let lastToday = dk();
   const onShow = () => { if (dk() !== lastToday) { if (cur === lastToday) cur = dk(); lastToday = dk(); render(); } pollHealth(); publishFood(); };
   document.addEventListener('visibilitychange', () => { if (!document.hidden) onShow(); });

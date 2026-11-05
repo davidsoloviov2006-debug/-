@@ -323,3 +323,7 @@ summary::-webkit-details-marker { display: none; }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 @media (max-width: 370px) { .summary { gap: 8px 14px; } .mbar { grid-template-columns: 74px 1fr auto; } .wd i { width: 34px; height: 34px; } }
+.copy-box { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; }
+.copy-box code { flex: 1; min-width: 0; margin: 0; word-break: break-all; font-size: 12px; }
+.copy-box .btn { flex: none; }
+.row .sync-btn { margin-top: 0; }

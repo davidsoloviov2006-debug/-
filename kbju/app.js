@@ -25,7 +25,7 @@ const fmtInt = (x) => r0(x).toLocaleString(L === 'he' ? 'he-IL' : L);
 const KEY = 'kbju.v1';
 const defaults = () => ({
   v: 2,
-  settings: { lang: null, theme: 'auto', glass: 250, countExercise: true, scSync: 'KBJU Sync' },
+  settings: { lang: null, theme: 'auto', glass: 250, countExercise: true, relay: null },
   profile: { sex: 'm', age: 30, height: 175, weight: 75, activity: 1.375, goal: 'lose', pace: 0.5, target: 70 },
   goals: { kcal: 2000, pPct: 30, fPct: 30, cPct: 40, water: 2000, fib: 28 },
   days: {}, weights: {}, foods: {}, recipes: {}, hist: {}, favorites: [],
@@ -37,7 +37,7 @@ try { S = Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY) || '{}'
 S.settings = Object.assign(defaults().settings, S.settings);
 S.hist ||= {};
 if (S.recents) { S.recents.forEach((k, i) => { S.hist[k] ||= { g: 100, c: 1, t: Date.now() - i * 1000 }; }); delete S.recents; }
-const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast(t('storageFull')); } };
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast(t('storageFull')); } if (typeof schedulePublish === 'function') schedulePublish(); };
 
 // ---------- язык ----------
 const LANGS = { ru: 'Русский', he: 'עברית', en: 'English' };
@@ -339,7 +339,7 @@ function viewDiary() {
       <button class="add-btn" data-act="addEx" aria-label="add">${icon('plus')}</button></header>
     ${H ? `<div class="entry static"><div class="grow"><div class="e-name">${t('appleHealth')}</div><div class="e-sub">${H.steps ? `${fmtInt(H.steps)} ${t('steps')} · ` : ''}${t('syncedAt', { t: new Date(H.t).toLocaleTimeString(L === 'he' ? 'he-IL' : L, { hour: '2-digit', minute: '2-digit' }) })}</div></div><div class="e-kcal act">${fmtInt(H.ae)}</div></div>` : ''}
     ${(D.ex || []).map((e) => `<button class="entry" data-act="delEx" data-id="${e.id}"><div class="grow"><div class="e-name">${esc(e.name)}</div><div class="e-sub">${e.min ? `${e.min} ${t('min')}` : ''}</div></div><div class="e-kcal act">${fmtInt(e.kcal)}</div></button>`).join('')}
-    <button class="sync-btn" data-act="sync">${icon('sync')} ${t('syncHealth')}</button>
+    ${S.settings.relay ? `<div class="row gap mt"><button class="sync-btn grow" data-act="refresh">${icon('sync')} ${t('refresh')}</button><button class="sync-btn grow" data-act="sync">${icon('watch')} ${t('runNow')}</button></div>` : `<button class="sync-btn" data-act="healthSetup">${icon('heart')} ${t('connectHealth')}</button>`}
   </section>
   <section class="card water">
     <header class="meal-h"><span class="meal-ic w">${icon('drop')}</span><div class="grow"><h3>${t('water')}</h3><small>${fmtInt(D.water)} / ${fmtInt(G.water)} ${t('ml')}</small></div>
@@ -577,7 +577,8 @@ A.restore = (el) => {
 };
 A.wipe = () => confirmBox(t('wipeConfirm'), t('wipe'), () => { localStorage.removeItem(KEY); S = defaults(); save(); render(); });
 A.healthSetup = () => openHealthSetup();
-A.sync = () => startSync();
+A.sync = () => runActivityShortcut();
+A.refresh = () => pollHealth(true);
 
 function download(name, text, type) {
   const blob = new Blob([text], { type }); const a = document.createElement('a');
@@ -591,79 +592,103 @@ function exportCsv() {
   download(`kbju-diary-${dk()}.csv`, csv, 'text/csv');
 }
 
-// ---------- Apple «Здоровье» через «Команды» ----------
-// Туда: еда, которую ещё не отправляли (передаётся во входе команды).
-// Обратно: команда копирует «KBJU ae=… steps=… w=…» в буфер, приложение вставляет по нажатию.
+// ---------- Apple «Здоровье»: автоматически через «Команды» + ntfy.sh ----------
+// «Команды» по расписанию: KBJU Activity шлёт активность/шаги/вес в канал <relay>-in,
+// KBJU Food в 23:55 забирает итог дня из <relay>-food и пишет еду в «Здоровье».
+// Приложение само забирает данные при открытии и публикует итог еды при изменениях.
+const NTFY = 'https://ntfy.sh/';
+const SC_ACT = 'KBJU Activity', SC_FOOD = 'KBJU Food';
 const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-function startSync() {
-  if (!isIOS) return toast(t('iosOnly'));
-  const d = dk(), D = day(d), T = dayTotals(d), sent = D.sent || zeroN();
-  const delta = Object.fromEntries(NK.map((k) => [k, Math.max(0, r1(T[k] - (sent[k] || 0)))]));
-  S.sync = { at: Date.now(), d, totals: T };
-  save();
-  const url = `shortcuts://run-shortcut?name=${encodeURIComponent(S.settings.scSync)}&input=text&text=${encodeURIComponent(JSON.stringify(delta))}`;
-  location.href = url;
+function relay() {
+  if (!S.settings.relay) {
+    const a = new Uint8Array(20); crypto.getRandomValues(a);
+    S.settings.relay = 'kbju-' + [...a].map((x) => 'abcdefghijkmnpqrstuvwxyz23456789'[x % 32]).join('');
+    save();
+  }
+  return S.settings.relay;
 }
+const urlIn = () => NTFY + relay() + '-in';
+const urlFood = () => NTFY + relay() + '-food/raw?poll=1&since=latest';
 function parseHealth(txt) {
   if (!/KBJU/i.test(txt || '')) return null;
   const grab = (k, int) => {
-    const m = txt.match(new RegExp(k + '\\s*=\\s*([\\d\\s\\u00a0\\u202f.,]+)', 'i')); if (!m) return null;
+    const m = txt.match(new RegExp('\\b' + k + '\\s*=\\s*([\\d\\s\\u00a0\\u202f.,]+)', 'i')); if (!m) return null;
     let s = m[1].replace(/[\s  ]/g, '');
     if (int) s = s.replace(/[.,](?=\d{3}(\D|$))/g, '');
     s = s.replace(',', '.'); const v = parseFloat(s); return isFinite(v) ? v : null;
   };
   return { ae: grab('ae', false), steps: grab('steps', true), w: grab('w', false) };
 }
-function applyHealth(h) {
-  const today = dk(), D = day(today);
-  D.health = { ae: r0(h.ae || 0), steps: r0(h.steps || 0), t: Date.now() };
-  if (h.w > 20 && h.w < 400) { S.weights[today] = r1(h.w); S.profile.weight = r1(h.w); }
-  if (S.sync && S.sync.d === today) D.sent = S.sync.totals;
-  S.sync = null; S.lastSync = Date.now(); save();
-  toast(t('syncOk', { a: fmtInt(h.ae || 0), s: fmtInt(h.steps || 0) }));
+function applyHealth(h, at = Date.now(), quiet = false) {
+  const d = dk(new Date(at)), D = day(d);
+  const prev = D.health;
+  D.health = { ae: r0(h.ae || 0), steps: r0(h.steps || 0), t: at };
+  if (h.w > 20 && h.w < 400) { S.weights[d] = r1(h.w); S.profile.weight = r1(h.w); }
+  S.lastSync = at; save();
+  if (!quiet || !prev || prev.ae !== D.health.ae) toast(t('syncOk', { a: fmtInt(h.ae || 0), s: fmtInt(h.steps || 0) }));
   render();
 }
-async function pasteHealth(after) {
+let polling = false;
+async function pollHealth(manual = false) {
+  if (!S.settings.relay || polling || !navigator.onLine) { if (manual && !S.settings.relay) openHealthSetup(); return; }
+  polling = true;
   try {
-    const txt = await navigator.clipboard.readText();
-    const h = parseHealth(txt);
-    if (!h) { toast(t('noHealthData')); return false; }
-    applyHealth(h); after?.(); return true;
-  } catch { toast(t('pasteDenied')); return false; }
+    const r = await fetch(NTFY + S.settings.relay + '-in/json?poll=1&since=latest', { cache: 'no-store' });
+    const lines = (await r.text()).trim().split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter((m) => m && m.event === 'message');
+    const m = lines[lines.length - 1];
+    if (!m) { if (manual) toast(t('noHealthYet')); return; }
+    const at = m.time * 1000;
+    if (S.lastSync && at <= S.lastSync) { if (manual) toast(t('upToDate')); return; }
+    const h = parseHealth(m.message);
+    if (h) applyHealth(h, at, !manual);
+  } catch { if (manual) toast(t('netError')); }
+  finally { polling = false; }
 }
-function offerPaste() {
-  if (!S.sync || Date.now() - S.sync.at > 15 * 60e3 || sheets.some((s) => s.paste)) return;
-  const sh = openSheet(`<div class="center pad"><span class="big-ic">${icon('heart')}</span><h2 class="center">${t('pasteTitle')}</h2><p class="muted">${t('pasteText')}</p></div>
-    <button class="btn accent wide" id="pst">${t('paste')}</button><button class="btn ghost wide" id="cnl">${t('cancel')}</button>`, {
-    onMount: (b, s) => {
-      b.querySelector('#pst').onclick = () => pasteHealth(() => closeSheet(s));
-      b.querySelector('#cnl').onclick = () => { S.sync = null; save(); closeSheet(s); };
-    },
-  });
-  sh.paste = true;
+// итог еды за сегодня → канал для команды KBJU Food (храним ~12 ч, поэтому обновляем и при открытии)
+let pubTimer;
+function schedulePublish() { if (!S.settings.relay) return; clearTimeout(pubTimer); pubTimer = setTimeout(publishFood, 2500); }
+async function publishFood(force = false) {
+  if (!S.settings.relay || !navigator.onLine) return;
+  const d = dk(); if (!logged(d)) return;
+  const T = dayTotals(d);
+  const body = { d, kcal: r0(T.kcal), p: r1(T.p), f: r1(T.f), c: r1(T.c), fib: r1(T.fib) };
+  const sig = JSON.stringify(body), last = S.relayPub || {};
+  if (!force && last.sig === sig && Date.now() - last.at < 6 * 36e5) return;
+  try { const r = await fetch(NTFY + S.settings.relay + '-food', { method: 'POST', body: sig }); if (r.ok) { S.relayPub = { sig, at: Date.now() }; try { localStorage.setItem(KEY, JSON.stringify(S)); } catch {} } } catch {}
+}
+function runActivityShortcut() {
+  if (!isIOS) return toast(t('iosOnly'));
+  location.href = `shortcuts://run-shortcut?name=${encodeURIComponent(SC_ACT)}`;
 }
 function openHealthSetup() {
-  const n = esc(S.settings.scSync);
+  relay(); schedulePublish();
   const step = (i, title, body) => `<div class="hs-step"><span class="hs-n">${i}</span><div class="grow"><b>${title}</b>${body ? `<p>${body}</p>` : ''}</div></div>`;
+  const copyBox = (id, val) => `<div class="copy-box"><code id="${id}">${esc(val)}</code><button class="btn sm accent" data-copy="${id}">${icon('copy')} ${t('copy')}</button></div>`;
   openSheet(`<h2>${icon('heart')} ${t('appleHealth')}</h2>
     <p class="muted">${t('hsIntro')}</p>
-    <div class="hs-what"><div>${icon('upload')}<span>${t('hsTo')}</span></div><div>${icon('download')}<span>${t('hsFrom')}</span></div></div>
-    <h3 class="mt">${t('hsOnce')}</h3>
-    ${step(1, t('hsS1', { n: `«${n}»` }), t('hsS1b'))}
-    ${step(2, t('hsS2'), t('hsS2b'))}
-    ${step(3, t('hsS3'), t('hsS3b'))}
-    ${step(4, t('hsS4'), t('hsS4b'))}
-    ${step(5, t('hsS5'), t('hsS5b'))}
-    ${step(6, t('hsS6'), `<code>KBJU ae=[${t('hsSum')} 1] steps=[${t('hsSum')} 2] w=[${t('weight')}]</code><br>${t('hsS6b')}`)}
-    ${step(7, t('hsS7'), t('hsS7b'))}
-    <h3 class="mt">${t('hsDaily')}</h3>
-    <p class="muted small">${t('hsDailyText')}</p>
-    <label class="fld mt"><span>${t('scName')}</span><input class="input" id="scN" value="${n}"></label>
-    <div class="row gap"><button class="btn ghost grow" id="hsSave">${t('save')}</button><button class="btn accent grow" id="hsTest">${icon('sync')} ${t('syncHealth')}</button></div>`, {
+    <div class="hs-what"><div>${icon('download')}<span>${t('hsFrom')}</span></div><div>${icon('upload')}<span>${t('hsTo')}</span></div></div>
+    <h3 class="mt">${t('hsA', { n: SC_ACT })}</h3>
+    ${step(1, t('hsA1', { n: `«${SC_ACT}»` }))}
+    ${step(2, t('hsA2'), t('hsA2b'))}
+    ${step(3, t('hsA3'))}
+    ${step(4, t('hsA4'))}
+    ${step(5, t('hsA5'), `<code>KBJU ae=[${t('hsSum')} 1] steps=[${t('hsSum')} 2] w=[${t('hsSamples')}]</code>`)}
+    ${step(6, t('hsA6'), copyBox('u1', urlIn()) + t('hsA6b'))}
+    ${step(7, t('hsA7'), t('hsA7b'))}
+    <h3 class="mt">${t('hsF', { n: SC_FOOD })}</h3>
+    ${step(1, t('hsF1', { n: `«${SC_FOOD}»` }), copyBox('u2', urlFood()))}
+    ${step(2, t('hsF2'))}
+    ${step(3, t('hsF3'), t('hsF3b'))}
+    ${step(4, t('hsF4'), t('hsF4b'))}
+    <h3 class="mt">${t('hsAuto')}</h3>
+    ${step(1, t('hsAu1', { n: SC_ACT }), t('hsAu1b'))}
+    ${step(2, t('hsAu2', { n: SC_FOOD }), t('hsAu2b'))}
+    <p class="muted small mt">${t('hsPrivacy')}</p>
+    <button class="btn accent wide" id="hsTest">${icon('sync')} ${t('checkNow')}</button>`, {
     full: true,
     onMount: (b, sh) => {
-      b.querySelector('#hsSave').onclick = () => { S.settings.scSync = b.querySelector('#scN').value.trim() || 'KBJU Sync'; save(); toast(t('saved')); };
-      b.querySelector('#hsTest').onclick = () => { S.settings.scSync = b.querySelector('#scN').value.trim() || 'KBJU Sync'; save(); closeSheet(sh); startSync(); };
+      b.querySelectorAll('[data-copy]').forEach((x) => x.onclick = async () => { try { await navigator.clipboard.writeText(b.querySelector('#' + x.dataset.copy).textContent); toast(t('copied2')); } catch { toast(t('pasteDenied')); } });
+      b.querySelector('#hsTest').onclick = () => { publishFood(true); pollHealth(true); };
     },
   });
 }
@@ -1102,9 +1127,10 @@ function init() {
   $('#fab').onclick = () => { haptic(); openAdd({}); };
   setInterval(() => { if (tab === 'progress' && S.fast.start && !sheets.length) render(); }, 30000);
   let lastToday = dk();
-  const onShow = () => { if (dk() !== lastToday) { if (cur === lastToday) cur = dk(); lastToday = dk(); render(); } offerPaste(); };
+  const onShow = () => { if (dk() !== lastToday) { if (cur === lastToday) cur = dk(); lastToday = dk(); render(); } pollHealth(); publishFood(); };
   document.addEventListener('visibilitychange', () => { if (!document.hidden) onShow(); });
-  window.addEventListener('pageshow', () => setTimeout(offerPaste, 300));
+  setInterval(() => { if (!document.hidden) pollHealth(); }, 5 * 60e3);
+  setTimeout(() => { pollHealth(); publishFood(); }, 1200);
   let sx = null, sy = 0;
   $('#view').addEventListener('touchstart', (e) => { if (tab !== 'diary') return; sx = e.touches[0].clientX; sy = e.touches[0].clientY; }, { passive: true });
   $('#view').addEventListener('touchend', (e) => {
@@ -1114,7 +1140,7 @@ function init() {
   render();
   setTimeout(loadIL, 600); // большая база Минздрава — в фоне
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
-  window.KBJU = { S: () => S, lookupBarcode, parseLabel, parseHealth, applyHealth, searchLocal, render };
+  window.KBJU = { S: () => S, lookupBarcode, parseLabel, parseHealth, applyHealth, searchLocal, render, pollHealth, openHealthSetup };
 }
 init();
 })();

@@ -1,12 +1,16 @@
 import { BirdClient } from "@messagebird/sdk";
 
-// TODO: replace "bk_xxxxxxxxx" with your real Bird API key
-// (Bird dashboard -> Platform tools -> API keys, scope: whatsapp:write).
-// Don't commit a real key to git.
-const bird = new BirdClient({ apiKey: "bk_xxxxxxxxx" });
+// Key and recipient come from .env (not committed to git).
+const apiKey = process.env.BIRD_API_KEY;
+const to = process.env.BIRD_TO;
+if (!apiKey || !to) {
+  throw new Error("Set BIRD_API_KEY and BIRD_TO in bird-whatsapp/.env");
+}
+
+const bird = new BirdClient({ apiKey });
 
 const msg = await bird.whatsapp.send({
-  to: "+15551234567", // replace with the recipient's number in E.164 format
+  to,
   template: {
     slug: "bird_delivery_update",
     components: [

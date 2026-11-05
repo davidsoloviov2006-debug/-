@@ -327,3 +327,29 @@ summary::-webkit-details-marker { display: none; }
 .copy-box code { flex: 1; min-width: 0; margin: 0; word-break: break-all; font-size: 12px; }
 .copy-box .btn { flex: none; }
 .row .sync-btn { margin-top: 0; }
+/* «Сегодня» */
+.scores { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; padding: 20px 10px; }
+.score { display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; }
+.score .ring-c b { font-size: 24px; }
+.score > span { font-weight: 620; font-size: 15px; margin-top: 4px; }
+.score > small { color: var(--muted); font-size: 12.5px; }
+.checkin-cta { display: flex; align-items: center; gap: 14px; text-align: start; border: 1.5px dashed var(--accent); }
+.advice h3 { margin-bottom: 6px; } .advice p { margin: 0; color: var(--muted); line-height: 1.45; }
+.advice.z-g { border-inline-start: 4px solid var(--accent); } .advice.z-y { border-inline-start: 4px solid var(--f); } .advice.z-r { border-inline-start: 4px solid var(--danger); }
+.meal-ic.sl { background: rgba(171,151,239,.15); color: #ab97ef; }
+.nights { display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; height: 110px; margin: 16px 0 6px; }
+.night { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 6px; height: 100%; }
+.night i { display: block; width: 100%; max-width: 26px; border-radius: 7px; background: #ab97ef; opacity: .85; }
+.night i.low { background: var(--f); }
+.night span { font-size: 12px; color: var(--muted); }
+.night.cur span { color: var(--text); font-weight: 700; }
+.mini-row { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 14px; color: var(--muted); padding-top: 10px; border-top: 1px solid var(--line); margin-top: 10px; }
+.mini-row b { color: var(--text); } .warn-t { color: var(--danger) !important; }
+.macros.flat { border-top: 0; padding-top: 0; }
+button.card { text-align: start; }
+.scale5, .scale10 { display: grid; gap: 6px; }
+.scale5 { grid-template-columns: repeat(5, 1fr); } .scale10 { grid-template-columns: repeat(10, 1fr); }
+.scale5 button, .scale10 button { text-align: center; height: 44px; border-radius: 12px; background: var(--card-2); font-weight: 600; color: var(--muted); }
+.scale10 button { height: 40px; font-size: 14px; }
+.scale5 button.on, .scale10 button.on { background: var(--accent); color: var(--accent-ink); }
+.scale-l { display: flex; justify-content: space-between; color: var(--muted); padding: 0 2px; }

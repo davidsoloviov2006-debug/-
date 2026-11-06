@@ -1149,23 +1149,39 @@ function openScanner() {
         const track = stream.getVideoTracks()[0];
         const caps = track.getCapabilities?.() || {};
         if (caps.torch) { const tb = $('#torch', b); tb.hidden = false; let on = false; tb.onclick = () => { on = !on; track.applyConstraints({ advanced: [{ torch: on }] }).catch(() => {}); tb.classList.toggle('on', on); }; }
-        let tmr = 0, zx = null;
-        scanStop = () => { clearTimeout(tmr); try { zx?.reset(); } catch {} stream.getTracks().forEach((x) => x.stop()); scanStop = null; };
-        let native = null;
+        let tmr = 0, last = '', native = null, reader = null, n = 0;
+        scanStop = () => { clearTimeout(tmr); stream.getTracks().forEach((x) => x.stop()); scanStop = null; };
         if ('BarcodeDetector' in window) {
           try { const f = await BarcodeDetector.getSupportedFormats(); if (f.includes('ean_13')) native = new BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'] }); } catch {}
         }
-        if (native) {
-          const loop = async () => { if (done || !scanStop) return; try { const r = await native.detect(video); if (r[0]?.rawValue) return found(r[0].rawValue); } catch {} tmr = setTimeout(loop, 120); };
-          loop();
-        } else {
+        // ZXing: свой цикл по кадрам (метод библиотеки для видео зависает, если видео уже играет — так было на iPhone)
+        try {
           await loadScript('vendor/zxing.min.js');
           const Z = window.ZXing; const hints = new Map();
           hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.UPC_A, Z.BarcodeFormat.UPC_E, Z.BarcodeFormat.CODE_128]);
           hints.set(Z.DecodeHintType.TRY_HARDER, true);
-          zx = new Z.BrowserMultiFormatReader(hints, 150);
-          zx.decodeFromVideoElementContinuously(video, (res) => { if (res) found(res.getText()); });
-        }
+          reader = new Z.MultiFormatReader(); reader.setHints(hints);
+        } catch (e) { console.warn(e); }
+        const cv = document.createElement('canvas'), cx = cv.getContext('2d', { willReadFrequently: true });
+        const zxRead = (full) => {
+          const vw = video.videoWidth, vh = video.videoHeight; if (!vw || !reader) return null;
+          // по центру — та же зона, что и рамка на экране; каждый 3-й кадр — весь кадр
+          const sw = full ? vw : vw * 0.9, sh = full ? vh : Math.min(vh, vw * 0.55), sx = (vw - sw) / 2, sy = (vh - sh) / 2;
+          const k = Math.min(1, 960 / sw); cv.width = Math.round(sw * k); cv.height = Math.round(sh * k);
+          cx.drawImage(video, sx, sy, sw, sh, 0, 0, cv.width, cv.height);
+          try { const Z = window.ZXing; return reader.decode(new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(cv)))).getText(); } catch { return null; } finally { try { reader.reset(); } catch {} }
+        };
+        const loop = async () => {
+          if (done || !scanStop) return;
+          if (video.readyState >= 2) {
+            let code = null;
+            if (native) { try { const r = await native.detect(video); code = r[0]?.rawValue || null; } catch { native = null; } }
+            if (!code) code = zxRead(++n % 3 === 0);
+            if (code) { if (code === last) return found(code); last = code; } // два одинаковых чтения подряд
+          }
+          tmr = setTimeout(loop, 120);
+        };
+        loop();
       } catch (e) { console.warn(e); st.textContent = t('noCamera'); }
     },
     onClose: () => scanStop?.(),
@@ -1254,7 +1270,12 @@ function init() {
   });
   render();
   setTimeout(loadIL, 600); // большая база Минздрава — в фоне
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    // новая версия: один раз перезагружаемся, чтобы не нужно было перезапускать вручную
+    const hadSW = !!navigator.serviceWorker.controller; let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadSW && !reloaded) { reloaded = true; location.reload(); } });
+    navigator.serviceWorker.register('sw.js').then((r) => { document.addEventListener('visibilitychange', () => { if (!document.hidden) r.update().catch(() => {}); }); }).catch(() => {});
+  }
   window.KBJU = { S: () => S, lookupBarcode, parseLabel, parseHealth, applyHealth, searchLocal, render, pollHealth, openHealthSetup };
 }
 init();

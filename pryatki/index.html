@@ -46,6 +46,8 @@
   .pl .rn{color:var(--mute);font-size:13px}
   .tag{font-size:12px;padding:2px 8px;border-radius:99px;background:#334155;color:var(--text);margin-left:6px;font-weight:400}
   .tag.h{background:#14532d}.tag.s{background:#1e3a8a}.tag.o{background:#78350f}
+  #bigCode{font-size:30px;font-weight:800;letter-spacing:.25em;text-align:center;padding:2px 0 6px}
+  #toast{position:fixed;left:50%;top:70px;transform:translateX(-50%);background:#0b1220;border:1px solid var(--acc);padding:10px 16px;border-radius:12px;z-index:3000;max-width:90%;text-align:center}
   #gate{position:fixed;inset:0;background:rgba(2,6,23,.92);display:flex;align-items:center;justify-content:center;z-index:2000;padding:20px}
   #gate .box{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px;width:100%;max-width:360px}
   #gate h2{margin:0 0 6px}
@@ -70,7 +72,7 @@
 
     <!-- Профиль и комната -->
     <div id="people">
-      <div class="me"><div>Вы: <span class="nick" id="meNick"></span></div>
+      <div class="me"><div>Вы: <span class="nick" id="meNick"></span> <span class="hint">· v3</span></div>
         <button class="small" id="editNick">Сменить ник</button></div>
 
       <div id="roomOff">
@@ -82,18 +84,24 @@
       </div>
 
       <div id="roomOn" class="hidden">
+        <p class="hint" style="text-align:center;margin-top:10px">Код комнаты</p>
+        <div id="bigCode"></div>
+        <div class="row"><button id="copyLink" class="primary" style="flex:1">Пригласить в комнату</button></div>
         <div class="row"><input type="text" id="realNameOn" maxlength="30" placeholder="Ваше имя в комнате (необязательно)"></div>
+        <div id="hostTools" class="hidden">
+          <div class="row"><label>Искателей</label><input type="number" id="seekerCount" min="1" max="10" value="1">
+            <button id="rollSeeker">🎲 Случайный искатель</button></div>
+        </div>
         <h3 id="peopleTitle">Участники</h3>
         <div id="players"></div>
-        <div class="row"><button id="copyLink" style="flex:1">Скопировать ссылку</button>
-          <button id="leaveRoom" class="danger" style="flex:1">Выйти</button></div>
+        <div class="row"><button id="leaveRoom" class="danger" style="flex:1">Выйти</button></div>
       </div>
     </div>
 
     <!-- Настройка -->
     <div id="setup">
-      <h3>Роль</h3>
-      <div class="tabs"><button id="roleHider" class="on">Прячусь</button><button id="roleSeeker">Ищу</button></div>
+      <div id="roleBox"><h3>Роль</h3>
+      <div class="tabs"><button id="roleHider" class="on">Прячусь</button><button id="roleSeeker">Ищу</button></div></div>
 
       <h3>Зона</h3>
       <div id="viewerNote" class="hint hidden">Зону и время задаёт хозяин комнаты — вы видите их на карте.</div>
@@ -221,9 +229,17 @@ map.on("click", e => {
 
 // ---------- геолокация ----------
 let lastCode = null, centered = false;
+// своя позиция уходит хозяину (он раскрывает её другим только если вас нашли)
+function sharePos() {
+  if (!room || !me) return;
+  if (room.isHost) { const hp = room.players.get("host"); if (hp) hp.pos = { lat: me.lat, lng: me.lng }; }
+  else if (room.conn && room.conn.open) room.conn.send({ t: "pos", lat: me.lat, lng: me.lng });
+}
+setInterval(sharePos, 4000);
 function onPos(pos) {
   me = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy };
   drawMe();
+  sharePos();
   if (!centered) {
     centered = true;
     if (playCircle) map.fitBounds(playCircle.getBounds()); else map.setView([me.lat, me.lng], 15);
@@ -272,7 +288,7 @@ function me2player() { return { nick: P.nick, name: P.name, role: P.role }; }
 
 function hostBroadcast() {
   if (!room || !room.isHost) return;
-  const players = [...room.players].map(([id, p]) => ({ id, nick: p.nick, name: p.name, role: p.role, host: id === "host" }));
+  const players = [...room.players].map(([id, p]) => ({ id, nick: p.nick, name: p.name, role: p.role, host: id === "host", found: !!p.found, foundBy: p.foundBy || "", foundPos: p.foundPos || null }));
   const shared = {}; SHARED.forEach(k => shared[k] = S[k]);
   const msg = { t: "state", shared, players, hostNow: Date.now() };
   room.conns.forEach(c => { try { c.open && c.send({ ...msg, you: c.peer }); } catch(e) {} });
@@ -292,11 +308,20 @@ function createRoom() {
     peer.on("connection", conn => {
       conn.on("data", d => {
         if (!d || typeof d !== "object") return;
-        if (d.t === "hello" || d.t === "me") {
-          if (d.t === "hello" && room.conns.size >= 30) { conn.close(); return; }
+        if (d.t === "hello") {
+          if (room.conns.size >= 30) { conn.close(); return; }
           room.conns.set(conn.peer, conn);
-          room.players.set(conn.peer, { nick: clean(d.nick, 20) || "Игрок", name: clean(d.name, 30), role: d.role === "seeker" ? "seeker" : "hider" });
+          room.players.set(conn.peer, { nick: clean(d.nick, 20) || "Игрок", name: clean(d.name, 30),
+            role: S.game && S.game.phase !== "done" ? "seeker" : "hider" });
           hostBroadcast();
+        } else if (d.t === "me") {
+          const p = room.players.get(conn.peer); if (!p) return;
+          p.nick = clean(d.nick, 20) || p.nick; p.name = clean(d.name, 30); hostBroadcast();
+        } else if (d.t === "pos") {
+          const p = room.players.get(conn.peer);
+          if (p && isFinite(d.lat) && isFinite(d.lng)) p.pos = { lat: +d.lat, lng: +d.lng };
+        } else if (d.t === "found") {
+          markFound(String(d.id), conn.peer);
         }
       });
       const drop = () => { room.conns.delete(conn.peer); room.players.delete(conn.peer); hostBroadcast(); };
@@ -325,7 +350,7 @@ function joinRoom(code) {
     const conn = peer.connect(peerId(code), { reliable: true });
     conn.on("open", () => {
       room = { code, isHost: false, peer, conn, players: new Map(), list: [] };
-      conn.send({ t: "hello", ...me2player() });
+      conn.send({ t: "hello", ...me2player() }); sharePos();
     });
     conn.on("data", d => {
       if (!d || d.t !== "state") return;
@@ -345,6 +370,13 @@ function applyRemote(d) {
   SHARED.forEach(k => { if (k in d.shared) S[k] = d.shared[k]; });
   if (S.game && S.game.endAt) S.game = { ...S.game, endAt: S.game.endAt - off };
   room.list = d.players; room.myId = d.you;
+  const my = d.players.find(p => p.id === d.you);
+  if (my && my.role !== P.role) {
+    const wasHider = P.role === "hider";
+    P.role = my.role; saveProfile();
+    if (my.found && wasHider) { alertUser(); toast("Вас нашли! Теперь вы ищете."); }
+    else toast(my.role === "seeker" ? "Ваша роль: ИЩЕТЕ" : "Ваша роль: ПРЯЧЕТЕСЬ");
+  }
   const hadGame = !$("game").classList.contains("hidden");
   drawZones(); syncInputs(); renderRoom(); refreshStatus();
   if (S.game) { if (!hadGame) { S.myResult = null; keepAwake(); } enterGame(); }
@@ -356,6 +388,57 @@ function sendMe() {
   if (!room) return;
   if (room.isHost) { room.players.set("host", me2player()); hostBroadcast(); }
   else if (room.conn && room.conn.open) room.conn.send({ t: "me", ...me2player() });
+}
+
+let toastTimer = null;
+function toast(t) {
+  let el = $("toast");
+  if (!el) { el = document.createElement("div"); el.id = "toast"; document.body.append(el); }
+  el.textContent = t; el.classList.remove("hidden");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.add("hidden"), 4500);
+}
+
+function randomSeekers(n) {
+  if (!room || !room.isHost) return;
+  const ids = [...room.players.keys()];
+  for (let i = ids.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [ids[i], ids[j]] = [ids[j], ids[i]]; }
+  n = Math.max(1, Math.min(n, Math.max(1, ids.length - 1)));
+  const seekers = new Set(ids.slice(0, n));
+  room.players.forEach((p, id) => { p.role = seekers.has(id) ? "seeker" : "hider"; p.found = false; p.foundBy = ""; p.foundPos = null; });
+  const mine = room.players.get("host").role;
+  if (mine !== P.role) { P.role = mine; saveProfile(); syncInputs(); }
+  toast("Ищет: " + ids.slice(0, n).map(id => room.players.get(id).nick).join(", "));
+  hostBroadcast();
+}
+
+function markFound(id, byId) {
+  if (!room || !room.isHost || !S.game || S.game.phase !== "seek") return;
+  const p = room.players.get(id), by = room.players.get(byId);
+  if (!p || !by || p.role !== "hider" || by.role !== "seeker") return;
+  p.found = true; p.foundBy = by.nick; p.foundPos = p.pos || null; p.role = "seeker";
+  toast(`${p.nick} найден — теперь ищет`);
+  if (id === "host") { P.role = "seeker"; saveProfile(); syncInputs(); alertUser(); }
+  if (![...room.players.values()].some(x => x.role === "hider")) {
+    S.game = { phase: "done", endAt: 0, allFound: true }; save(); renderGame();
+  }
+  hostBroadcast();
+}
+function markFoundUI(id, nick) {
+  if (!confirm(`Отметить «${nick}» найденным?`)) return;
+  if (room.isHost) markFound(id, "host");
+  else if (room.conn && room.conn.open) room.conn.send({ t: "found", id });
+}
+
+let foundMarkers = [];
+function drawFound(list) {
+  foundMarkers.forEach(m => map.removeLayer(m)); foundMarkers = [];
+  (list || []).forEach(p => {
+    if (!p.found || !p.foundPos) return;
+    const m = L.circleMarker([p.foundPos.lat, p.foundPos.lng], { radius: 9, color: "#fff", weight: 2, fillColor: "#f59e0b", fillOpacity: 1 }).addTo(map);
+    const el = document.createElement("span"); el.textContent = `${p.nick} — найден (${p.foundBy})`;
+    m.bindTooltip(el, { permanent: true, direction: "top" });
+    foundMarkers.push(m);
+  });
 }
 
 function leaveRoom(silent) {
@@ -374,8 +457,11 @@ function onRoomChanged() {
   $("roomOn").classList.toggle("hidden", !on);
   $("roomBar").classList.toggle("hidden", !on);
   if (on) $("realNameOn").value = P.name;
+  $("bigCode").textContent = on ? room.code : "";
+  $("hostTools").classList.toggle("hidden", !(on && room.isHost));
+  $("roleBox").classList.toggle("hidden", on);
   renderRoom(); applyEditable();
-  if (!on) { drawZones(); syncInputs(); }
+  if (!on) { drawFound([]); drawZones(); syncInputs(); }
 }
 
 function renderRoom() {
@@ -398,10 +484,17 @@ function renderRoom() {
     if (room.isHost ? p.host : p.id === room.myId) { const t = document.createElement("span"); t.className = "tag"; t.textContent = "вы"; nm.append(t); }
     left.append(nm);
     if (p.name) { const rn = document.createElement("div"); rn.className = "rn"; rn.textContent = p.name; left.append(rn); }
-    const tag = document.createElement("span"); tag.className = "tag " + (p.role === "hider" ? "h" : "s");
-    tag.textContent = p.role === "hider" ? "прячется" : "ищет";
-    d.append(left, tag); box.append(d);
+    const right = document.createElement("span"); right.style.display = "flex"; right.style.alignItems = "center"; right.style.gap = "6px";
+    const tag = document.createElement("span"); tag.className = "tag " + (p.found ? "o" : p.role === "hider" ? "h" : "s");
+    tag.textContent = p.found ? "найден" : p.role === "hider" ? "прячется" : "ищет";
+    if (S.game && S.game.phase === "seek" && P.role === "seeker" && p.role === "hider") {
+      const f = document.createElement("button"); f.className = "small primary"; f.textContent = "Нашёл";
+      f.onclick = () => markFoundUI(p.id, p.nick); right.append(f);
+    }
+    right.append(tag);
+    d.append(left, right); box.append(d);
   });
+  drawFound(list);
 }
 
 // ---------- UI настройки ----------
@@ -499,10 +592,15 @@ $("leaveRoom").onclick = () => { if (confirm("Выйти из комнаты?"))
 $("realNameOn").onchange = e => { P.name = clean(e.target.value, 30); saveProfile(); syncInputs(); sendMe(); };
 $("copyLink").onclick = async () => {
   const url = location.origin + location.pathname + "#room=" + room.code;
+  const text = "Заходи в игру «Прятки по городу»! Код комнаты: " + room.code;
   try {
-    if (navigator.share) await navigator.share({ title: "Прятки по городу", text: "Заходи в комнату " + room.code, url });
-    else { await navigator.clipboard.writeText(url); alert("Ссылка скопирована."); }
-  } catch(e) { prompt("Скопируйте ссылку:", url); }
+    if (navigator.share) await navigator.share({ title: "Прятки по городу", text, url });
+    else { await navigator.clipboard.writeText(text + "\n" + url); toast("Приглашение скопировано"); }
+  } catch(e) { if (e && e.name !== "AbortError") prompt("Скопируйте приглашение:", text + "\n" + url); }
+};
+$("rollSeeker").onclick = () => {
+  if (S.game) return toast("Игра уже идёт");
+  randomSeekers(+$("seekerCount").value || 1);
 };
 
 // ---------- игра ----------
@@ -511,6 +609,11 @@ async function keepAwake() { try { wake = await navigator.wakeLock?.request("scr
 
 $("start").onclick = () => {
   if (!S.play) return alert("Сначала выберите зону поиска на карте.");
+  if (room && room.isHost) {
+    const ps = [...room.players.values()];
+    if (!ps.some(p => p.role === "seeker") || !ps.some(p => p.role === "hider") || ps.some(p => p.found)) randomSeekers(+$("seekerCount").value || 1);
+    else ps.forEach(p => { p.found = false; p.foundBy = ""; p.foundPos = null; });
+  }
   S.myResult = null;
   S.game = { phase: "hide", endAt: Date.now() + S.hideMin * 60000 };
   save(); keepAwake(); enterGame(); alertUser();
@@ -526,7 +629,7 @@ function toSeek(from) {
   S.myResult = P.role === "hider" ? (st.code === "ok" ? "Спрятались корректно" : "Нарушение: " + st.text) : null;
   S.game = { phase: "seek", endAt: from + S.seekMin * 60000 };
   if (isEditor()) save();
-  alertUser(); renderGame();
+  alertUser(); renderGame(); renderRoom();
 }
 function fmt(ms) {
   const s = Math.max(0, Math.ceil(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), ss = s % 60;
@@ -553,9 +656,10 @@ function renderGame() {
     $("timer").textContent = fmt(left);
     $("gameHint").textContent = S.myResult ? "Итог прятания: " + S.myResult : "Ищите в пределах синего круга. Красные зоны — там прятаться было нельзя.";
   } else {
-    $("phase").textContent = "Время вышло";
+    $("phase").textContent = g.allFound ? "Игра окончена" : "Время вышло";
     $("timer").textContent = "00:00";
-    $("gameHint").textContent = hider ? "Вы продержались до конца!" : "Время на поиски закончилось.";
+    $("gameHint").textContent = g.allFound ? "Все прячущиеся найдены — искатели победили!"
+      : hider ? "Вы продержались до конца!" : "Время на поиски закончилось.";
   }
 }
 function enterGame() {

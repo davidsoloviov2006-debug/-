@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<title>Прятки по городу</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root{--bg:#0f172a;--panel:#1e293b;--line:#334155;--text:#f1f5f9;--mute:#94a3b8;--ok:#22c55e;--bad:#ef4444;--warn:#f59e0b;--acc:#38bdf8}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  #app{display:flex;flex-direction:column;height:100%}
+  #map{flex:1;min-height:0}
+  #banner{padding:10px 14px;font-weight:600;text-align:center;background:var(--panel);border-bottom:1px solid var(--line)}
+  #banner.ok{background:#14532d}#banner.bad{background:#7f1d1d}#banner.warn{background:#78350f}
+  #timer{font-size:34px;font-variant-numeric:tabular-nums;font-weight:700;text-align:center;padding:6px 0 0}
+  #phase{text-align:center;color:var(--mute);font-size:13px}
+  #sheet{background:var(--panel);border-top:1px solid var(--line);padding:12px 14px calc(12px + env(safe-area-inset-bottom));max-height:48vh;overflow:auto}
+  .tabs{display:flex;gap:6px;margin-bottom:10px}
+  .tabs button{flex:1}
+  button{font:inherit;color:var(--text);background:#273449;border:1px solid var(--line);border-radius:10px;padding:10px 12px;cursor:pointer}
+  button.primary{background:var(--acc);color:#082f49;border-color:var(--acc);font-weight:700}
+  button.danger{background:var(--bad);border-color:var(--bad)}
+  button.on{background:var(--acc);color:#082f49;border-color:var(--acc);font-weight:700}
+  button:disabled{opacity:.45}
+  .row{display:flex;gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap}
+  .row label{flex:1;min-width:110px;color:var(--mute)}
+  input[type=range]{flex:2;min-width:140px}
+  input[type=number]{width:72px;background:#0f172a;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px}
+  .val{min-width:64px;text-align:right;font-variant-numeric:tabular-nums}
+  .zone{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)}
+  .zone button{padding:4px 10px}
+  h3{margin:12px 0 4px;font-size:13px;color:var(--mute);text-transform:uppercase;letter-spacing:.05em}
+  .hint{color:var(--mute);font-size:13px}
+  .hidden{display:none!important}
+  .leaflet-container{background:#0b1220}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="banner">Определяю геолокацию…</div>
+  <div id="map"></div>
+  <div id="sheet">
+    <!-- Настройка -->
+    <div id="setup">
+      <div class="tabs">
+        <button id="toolPlay" class="on">Зона поиска</button>
+        <button id="toolForbid">Запретная зона</button>
+      </div>
+      <p class="hint" id="toolHint"></p>
+
+      <div class="row"><label>Радиус зоны поиска</label>
+        <input type="range" id="playR" min="100" max="5000" step="50"><span class="val" id="playRv"></span></div>
+      <div class="row"><label>Радиус запретной зоны</label>
+        <input type="range" id="forbR" min="20" max="500" step="10"><span class="val" id="forbRv"></span></div>
+      <div class="row"><button id="playHere">Зона поиска вокруг меня</button>
+        <button id="forbHere">Запретная зона здесь</button></div>
+
+      <h3>Запретные зоны (прятаться нельзя)</h3>
+      <div id="zones"></div>
+
+      <h3>Время</h3>
+      <div class="row"><label>Время на прятки, мин</label><input type="number" id="hideMin" min="1" max="120"></div>
+      <div class="row"><label>Время на поиски, мин</label><input type="number" id="seekMin" min="1" max="480"></div>
+
+      <h3>Роль</h3>
+      <div class="tabs"><button id="roleHider" class="on">Прячусь</button><button id="roleSeeker">Ищу</button></div>
+
+      <div class="row"><button id="share">Поделиться настройками</button>
+        <button id="start" class="primary" style="flex:1">Начать игру</button></div>
+    </div>
+
+    <!-- Игра -->
+    <div id="game" class="hidden">
+      <div id="phase"></div>
+      <div id="timer">00:00</div>
+      <p class="hint" id="gameHint" style="text-align:center"></p>
+      <div class="row"><button id="skip" style="flex:1">Закончить прятки досрочно</button>
+        <button id="stop" class="danger" style="flex:1">Остановить игру</button></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const KEY = "pryatki.v1";
+
+// ---------- состояние ----------
+const defaults = () => ({
+  play: null,                // {lat,lng,r}
+  forbidden: [],             // [{lat,lng,r}]
+  playR: 1000, forbR: 100,
+  hideMin: 10, seekMin: 30,
+  role: "hider",
+  game: null                 // {phase:'hide'|'seek'|'done', endAt, result}
+});
+let S = defaults();
+try { Object.assign(S, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch(e) {}
+// настройки из ссылки
+try {
+  if (location.hash.startsWith("#g=")) {
+    const d = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(3)))));
+    Object.assign(S, d, { game: null });
+    history.replaceState(null, "", location.pathname);
+  }
+} catch(e) {}
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch(e) {} };
+
+let tool = "play";           // что ставим по тапу на карту
+let me = null;               // {lat,lng,acc}
+
+// ---------- геометрия ----------
+function dist(a, b) {
+  const R = 6371000, rad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * rad, dLng = (b.lng - a.lng) * rad;
+  const x = Math.sin(dLat/2)**2 + Math.cos(a.lat*rad) * Math.cos(b.lat*rad) * Math.sin(dLng/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+function status(p) {
+  if (!p) return { code: "none", text: "Нет геолокации" };
+  if (S.play && dist(p, S.play) > S.play.r) return { code: "outside", text: "Вы за пределами зоны поиска" };
+  const z = S.forbidden.find(z => dist(p, z) <= z.r);
+  if (z) return { code: "forbidden", text: "Вы в запретной зоне — здесь прятаться нельзя" };
+  return { code: "ok", text: S.play ? "Позиция допустима" : "Позиция допустима (зона поиска не выбрана)" };
+}
+
+// ---------- карта ----------
+const map = L.map("map", { zoomControl: false }).setView([55.7558, 37.6173], 13);
+L.control.zoom({ position: "topright" }).addTo(map);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19, attribution: "&copy; OpenStreetMap"
+}).addTo(map);
+
+let playCircle = null, zoneCircles = [], meMarker = null, meAcc = null;
+
+function drawZones() {
+  if (playCircle) { map.removeLayer(playCircle); playCircle = null; }
+  zoneCircles.forEach(c => map.removeLayer(c)); zoneCircles = [];
+  if (S.play) playCircle = L.circle([S.play.lat, S.play.lng], {
+    radius: S.play.r, color: "#38bdf8", weight: 3, fillOpacity: 0.05, dashArray: "8 6", interactive: false
+  }).addTo(map);
+  S.forbidden.forEach(z => zoneCircles.push(L.circle([z.lat, z.lng], {
+    radius: z.r, color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.3, weight: 2, interactive: false
+  }).addTo(map)));
+  renderZones();
+}
+function drawMe() {
+  if (!me) return;
+  const ll = [me.lat, me.lng];
+  if (!meMarker) {
+    meMarker = L.circleMarker(ll, { radius: 8, color: "#fff", weight: 3, fillColor: "#22c55e", fillOpacity: 1 }).addTo(map);
+    meAcc = L.circle(ll, { radius: me.acc, color: "#22c55e", weight: 1, fillOpacity: 0.1, interactive: false }).addTo(map);
+  } else { meMarker.setLatLng(ll); meAcc.setLatLng(ll).setRadius(me.acc); }
+}
+
+map.on("click", e => {
+  if (S.game) return;
+  if (tool === "play") S.play = { lat: e.latlng.lat, lng: e.latlng.lng, r: S.playR };
+  else S.forbidden.push({ lat: e.latlng.lat, lng: e.latlng.lng, r: S.forbR });
+  save(); drawZones(); refreshStatus();
+});
+
+// ---------- геолокация ----------
+let lastCode = null, centered = false;
+function onPos(pos) {
+  me = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy };
+  drawMe();
+  if (!centered) {
+    centered = true;
+    if (S.play) map.fitBounds(playCircle.getBounds()); else map.setView([me.lat, me.lng], 15);
+  }
+  refreshStatus();
+}
+function onPosErr(err) {
+  me = null;
+  setBanner("warn", err.code === 1 ? "Доступ к геолокации запрещён — разрешите его в настройках браузера"
+                                   : "Не удаётся определить местоположение");
+}
+if ("geolocation" in navigator) {
+  navigator.geolocation.watchPosition(onPos, onPosErr, { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
+} else setBanner("warn", "Геолокация не поддерживается этим браузером");
+
+function setBanner(cls, text) { const b = $("banner"); b.className = cls; b.textContent = text; }
+
+function alertUser() {
+  try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch(e) {}
+  try {
+    const c = new (window.AudioContext || window.webkitAudioContext)();
+    const o = c.createOscillator(), g = c.createGain();
+    o.frequency.value = 880; g.gain.value = 0.15; o.connect(g); g.connect(c.destination);
+    o.start(); o.stop(c.currentTime + 0.25);
+  } catch(e) {}
+}
+
+function refreshStatus() {
+  if (!me) return;
+  const st = status(me);
+  const cls = st.code === "ok" ? "ok" : "bad";
+  let text = st.text;
+  if (S.play) text += ` · до центра ${Math.round(dist(me, S.play))} м`;
+  setBanner(cls, text);
+  // предупреждаем только прячущегося и только во время прятания
+  const active = S.game && S.game.phase === "hide" && S.role === "hider";
+  if (active && st.code !== "ok" && st.code !== lastCode) alertUser();
+  lastCode = st.code;
+}
+
+// ---------- UI настройки ----------
+function renderZones() {
+  const box = $("zones");
+  if (!S.forbidden.length) { box.innerHTML = '<p class="hint">Пока нет. Выберите «Запретная зона» и тапните по карте.</p>'; return; }
+  box.innerHTML = "";
+  S.forbidden.forEach((z, i) => {
+    const d = document.createElement("div"); d.className = "zone";
+    d.innerHTML = `<span>Зона ${i + 1} · радиус ${z.r} м</span>`;
+    const go = document.createElement("button"); go.textContent = "Показать";
+    go.onclick = () => map.fitBounds(zoneCircles[i].getBounds());
+    const del = document.createElement("button"); del.textContent = "Удалить";
+    del.onclick = () => { S.forbidden.splice(i, 1); save(); drawZones(); refreshStatus(); };
+    const act = document.createElement("span"); act.style.display = "flex"; act.style.gap = "6px";
+    act.append(go, del); d.append(act); box.append(d);
+  });
+}
+function setTool(t) {
+  tool = t;
+  $("toolPlay").classList.toggle("on", t === "play");
+  $("toolForbid").classList.toggle("on", t === "forbid");
+  $("toolHint").textContent = t === "play"
+    ? "Тапните по карте, чтобы задать центр зоны, в которой идёт игра."
+    : "Тапайте по карте, чтобы добавить зоны, где прятаться запрещено.";
+}
+function syncInputs() {
+  $("playR").value = S.playR; $("playRv").textContent = S.playR + " м";
+  $("forbR").value = S.forbR; $("forbRv").textContent = S.forbR + " м";
+  $("hideMin").value = S.hideMin; $("seekMin").value = S.seekMin;
+  $("roleHider").classList.toggle("on", S.role === "hider");
+  $("roleSeeker").classList.toggle("on", S.role === "seeker");
+}
+$("toolPlay").onclick = () => setTool("play");
+$("toolForbid").onclick = () => setTool("forbid");
+$("playR").oninput = e => {
+  S.playR = +e.target.value; $("playRv").textContent = S.playR + " м";
+  if (S.play) { S.play.r = S.playR; drawZones(); refreshStatus(); }
+  save();
+};
+$("forbR").oninput = e => { S.forbR = +e.target.value; $("forbRv").textContent = S.forbR + " м"; save(); };
+$("playHere").onclick = () => {
+  if (!me) return alert("Местоположение пока не определено");
+  S.play = { lat: me.lat, lng: me.lng, r: S.playR }; save(); drawZones(); map.fitBounds(playCircle.getBounds()); refreshStatus();
+};
+$("forbHere").onclick = () => {
+  if (!me) return alert("Местоположение пока не определено");
+  S.forbidden.push({ lat: me.lat, lng: me.lng, r: S.forbR }); save(); drawZones(); refreshStatus();
+};
+$("hideMin").onchange = e => { S.hideMin = Math.max(1, +e.target.value || 1); save(); syncInputs(); };
+$("seekMin").onchange = e => { S.seekMin = Math.max(1, +e.target.value || 1); save(); syncInputs(); };
+$("roleHider").onclick = () => { S.role = "hider"; save(); syncInputs(); };
+$("roleSeeker").onclick = () => { S.role = "seeker"; save(); syncInputs(); };
+
+$("share").onclick = async () => {
+  const d = { play: S.play, forbidden: S.forbidden, playR: S.playR, forbR: S.forbR, hideMin: S.hideMin, seekMin: S.seekMin };
+  const url = location.origin + location.pathname + "#g=" + btoa(unescape(encodeURIComponent(JSON.stringify(d))));
+  try {
+    if (navigator.share) await navigator.share({ title: "Прятки по городу", url });
+    else { await navigator.clipboard.writeText(url); alert("Ссылка скопирована — отправьте её другим игрокам."); }
+  } catch(e) { prompt("Скопируйте ссылку:", url); }
+};
+
+// ---------- игра ----------
+let tick = null, wake = null;
+async function keepAwake() { try { wake = await navigator.wakeLock?.request("screen"); } catch(e) {} }
+
+$("start").onclick = () => {
+  if (!S.play) return alert("Сначала выберите зону поиска на карте.");
+  S.game = { phase: "hide", endAt: Date.now() + S.hideMin * 60000, result: null };
+  save(); keepAwake(); enterGame(); alertUser();
+};
+$("skip").onclick = () => { if (S.game && S.game.phase === "hide") toSeek(); };
+$("stop").onclick = () => {
+  if (!confirm("Остановить игру?")) return;
+  S.game = null; save(); clearInterval(tick); leaveGame();
+};
+
+function toSeek() {
+  const st = status(me);
+  S.game = { phase: "seek", endAt: Date.now() + S.seekMin * 60000,
+             result: S.role === "hider" ? (st.code === "ok" ? "Спрятались корректно" : "Нарушение: " + st.text) : null };
+  save(); alertUser(); renderGame();
+}
+function fmt(ms) {
+  const s = Math.max(0, Math.ceil(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), ss = s % 60;
+  const p = n => String(n).padStart(2, "0");
+  return (h ? h + ":" : "") + p(m) + ":" + p(ss);
+}
+function renderGame() {
+  const g = S.game; if (!g) return;
+  const left = g.endAt - Date.now();
+  if (g.phase !== "done" && left <= 0) {
+    if (g.phase === "hide") return toSeek();
+    S.game = { phase: "done", endAt: 0, result: g.result }; save(); alertUser();
+    return renderGame();
+  }
+  const hider = S.role === "hider";
+  $("skip").classList.toggle("hidden", g.phase !== "hide");
+  if (g.phase === "hide") {
+    $("phase").textContent = hider ? "Время спрятаться" : "Прячущиеся прячутся — ждите";
+    $("timer").textContent = fmt(left);
+    $("gameHint").textContent = hider ? "Не заходите в красные зоны и не покидайте синий круг." : "Поиски начнутся после таймера.";
+  } else if (g.phase === "seek") {
+    $("phase").textContent = hider ? "Вас ищут" : "Идут поиски";
+    $("timer").textContent = fmt(left);
+    $("gameHint").textContent = g.result ? "Итог прятания: " + g.result : "Ищите в пределах синего круга. Красные зоны — там прятаться было нельзя.";
+  } else {
+    $("phase").textContent = "Время вышло";
+    $("timer").textContent = "00:00";
+    $("gameHint").textContent = hider ? "Вы продержались до конца!" : "Время на поиски закончилось.";
+  }
+}
+function enterGame() {
+  $("setup").classList.add("hidden"); $("game").classList.remove("hidden");
+  clearInterval(tick); tick = setInterval(renderGame, 500); renderGame(); refreshStatus();
+}
+function leaveGame() {
+  $("game").classList.add("hidden"); $("setup").classList.remove("hidden");
+  try { wake && wake.release(); } catch(e) {}
+  refreshStatus();
+}
+document.addEventListener("visibilitychange", () => { if (S.game && !document.hidden) { keepAwake(); renderGame(); } });
+
+// ---------- запуск ----------
+setTool("play"); syncInputs(); drawZones();
+if (S.play) map.fitBounds(playCircle.getBounds());
+if (S.game) enterGame();
+</script>
+</body>
+</html>

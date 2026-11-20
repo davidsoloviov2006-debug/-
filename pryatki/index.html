@@ -85,7 +85,7 @@
 
     <!-- Профиль и комната -->
     <div id="people">
-      <div class="me"><div>Вы: <span class="nick" id="meNick"></span> <span class="hint">· v7</span></div>
+      <div class="me"><div>Вы: <span class="nick" id="meNick"></span> <span class="hint">· v8</span></div>
         <button class="small" id="editNick">Сменить ник</button></div>
 
       <div id="roomOff">
@@ -113,6 +113,14 @@
 
     <!-- Настройка -->
     <div id="setup">
+      <details style="margin:8px 0"><summary style="cursor:pointer;color:var(--acc)">Как играть</summary>
+        <ol class="hint" style="padding-left:18px">
+          <li>Хозяин создаёт комнату и отправляет код. Остальные входят по коду или ссылке.</li>
+          <li>Хозяин выбирает зону на карте и жмёт «🎲 Случайный искатель», затем «Начать игру».</li>
+          <li>Прячущиеся успевают спрятаться в синей зоне, не заходя в красные.</li>
+          <li>Потом искатели ищут. Синяя зона сужается к белому кругу, иногда появляются красные зоны.</li>
+          <li>Найденный становится искателем. Кто выйдет за синюю зону или останется в красной дольше 30 с — исключён.</li>
+        </ol></details>
       <div id="roleBox"><h3>Роль</h3>
       <div class="tabs"><button id="roleHider" class="on">Прячусь</button><button id="roleSeeker">Ищу</button></div></div>
 
@@ -131,6 +139,10 @@
         <div class="row"><button id="playHere">Зона поиска вокруг меня</button>
           <button id="forbHere">Запретная зона здесь</button></div>
 
+        <h3>Готовые режимы</h3>
+        <div class="tabs" id="presets">
+          <button data-p="fast">Быстрая</button><button data-p="normal">Обычная</button><button data-p="long">Долгая</button>
+        </div>
         <h3>Сужение зоны (как в PUBG)</h3>
         <div class="row"><label><input type="checkbox" id="shrinkOn"> Синяя зона сужается</label></div>
         <div class="row"><label>Шаг сужения, мин</label><input type="number" id="stageMin" min="1" max="30"></div>
@@ -139,6 +151,8 @@
         <div class="row"><label>Красная зона каждые, мин</label><input type="number" id="redEvery" min="1" max="30" step="0.5"></div>
         <div class="row"><label>Красная активна, мин</label><input type="number" id="redDur" min="0.5" max="10" step="0.5"></div>
         <div class="row"><label>Радиус красной, м</label><input type="number" id="redR" min="20" max="500" step="10"></div>
+        <div class="row"><label><input type="checkbox" id="revealOn"> Вспышка: при сужении искатели видят прячущихся 10 с</label></div>
+        <div class="row"><label>Автонаходка при сближении, м (0 — выкл.)</label><input type="number" id="autoFound" min="0" max="100" step="5"></div>
         <p class="hint">Белый круг — безопасная зона, в которую сужается синяя. За 30 с до красной зоны приходит предупреждение. Поиски начинаются после времени на прятки.</p>
       </div>
       <p class="hint" id="zoneSummary"></p>
@@ -175,15 +189,16 @@ if ("caches" in window) caches.keys().then(ks => ks.forEach(async k => {
 }));
 const $ = id => document.getElementById(id);
 const KEY = "pryatki.v2", PKEY = "pryatki.profile";
-const SHARED = ["play", "forbidden", "playR", "forbR", "hideMin", "seekMin", "game", "shrink", "stageMin", "shrinkPct", "red", "redEvery", "redDur", "redR"];
+const SHARED = ["play", "forbidden", "playR", "forbR", "hideMin", "seekMin", "game", "shrink", "stageMin", "shrinkPct", "red", "redEvery", "redDur", "redR", "autoFound", "reveal"];
 
 // ---------- состояние ----------
 // S — общее состояние игры (в комнате его задаёт хозяин), P — личный профиль
 let S = { play: null, forbidden: [], playR: 1000, forbR: 100, hideMin: 10, seekMin: 30, game: null, myResult: null,
-           shrink: true, stageMin: 4, shrinkPct: 25, red: true, redEvery: 3, redDur: 1.5, redR: 100 };
-let P = { nick: "", name: "", role: "hider" };
+           shrink: true, stageMin: 4, shrinkPct: 25, red: true, redEvery: 3, redDur: 1.5, redR: 100, autoFound: 15, reveal: true };
+let P = { nick: "", name: "", role: "hider", uid: "" };
 try { Object.assign(S, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch(e) {}
 try { Object.assign(P, JSON.parse(localStorage.getItem(PKEY) || "{}")); } catch(e) {}
+if (!P.uid) { P.uid = Math.random().toString(36).slice(2, 12) + Date.now().toString(36); try { localStorage.setItem(PKEY, JSON.stringify(P)); } catch(e) {} }
 let hashRoom = null;
 try {
   if (location.hash.startsWith("#g=")) {
@@ -241,10 +256,10 @@ function stageAt(i) {
 }
 function dyn(t) {
   const ss = stageSec(), i = Math.floor(t / ss), a = stageAt(i), b = stageAt(i + 1), within = t - i * ss, wait = ss * 0.7;
-  if (!(b.r < a.r)) return { cur: a, next: null, phase: "min", left: 0 };
-  if (within < wait) return { cur: a, next: b, phase: "wait", left: wait - within };
+  if (!(b.r < a.r)) return { cur: a, next: null, phase: "min", left: 0, stage: i };
+  if (within < wait) return { cur: a, next: b, phase: "wait", left: wait - within, stage: i };
   const f = (within - wait) / (ss - wait);
-  return { cur: { lat: a.lat + (b.lat - a.lat) * f, lng: a.lng + (b.lng - a.lng) * f, r: a.r + (b.r - a.r) * f }, next: b, phase: "shrink", left: ss - within };
+  return { cur: { lat: a.lat + (b.lat - a.lat) * f, lng: a.lng + (b.lng - a.lng) * f, r: a.r + (b.r - a.r) * f }, next: b, phase: "shrink", left: ss - within, stage: i };
 }
 const zoneAt = t => S.shrink ? dyn(t).cur : S.play;
 function redsAt(t) {
@@ -267,7 +282,7 @@ function view() {
   if (g && g.phase === "seek" && g.seekStart && (S.shrink || S.red)) {
     const t = (Date.now() - g.seekStart) / 1000;
     const d = S.shrink ? dyn(t) : { cur: S.play, next: null, phase: "min", left: 0 };
-    return { cur: d.cur, next: d.next, phase: d.phase, left: d.left, reds: redsAt(t), t };
+    return { cur: d.cur, next: d.next, phase: d.phase, left: d.left, stage: d.stage, reds: redsAt(t), t };
   }
   return { cur: S.play, next: null, phase: "min", left: 0, reds: [], t: 0 };
 }
@@ -411,8 +426,8 @@ let lastCode = null, centered = false;
 // своя позиция уходит хозяину (он раскрывает её другим только если вас нашли)
 function sharePos() {
   if (!room || !me) return;
-  if (room.isHost) { const hp = room.players.get("host"); if (hp) hp.pos = { lat: me.lat, lng: me.lng }; }
-  else if (room.conn && room.conn.open) room.conn.send({ t: "pos", lat: me.lat, lng: me.lng });
+  if (room.isHost) { const hp = room.players.get("host"); if (hp) { hp.pos = { lat: me.lat, lng: me.lng }; hp.posAt = Date.now(); hp.acc = me.acc; } }
+  else if (room.conn && room.conn.open) room.conn.send({ t: "pos", lat: me.lat, lng: me.lng, acc: me.acc });
 }
 setInterval(sharePos, 4000);
 function onPos(pos) {
@@ -454,8 +469,9 @@ function alertUser() {
 // ---------- выход за пределы зоны: 30 секунд на возвращение ----------
 const OUT_LIMIT = 30000;
 let outSince = null, excluded = false, outAlertAt = 0;
-function isOutside() { const z = curZone(); return !!(me && z && dist(me, z) > z.r + Math.min(me.acc || 0, 30)); }
-const isInRed = () => !!(me && S.game && S.game.phase === "seek" && inActiveRed(me));
+const GPS_BAD = 80;   // при точности хуже этой не штрафуем — это шум GPS
+function isOutside() { const z = curZone(); return !!(me && me.acc <= GPS_BAD && z && dist(me, z) > z.r + Math.min(me.acc || 0, 30)); }
+const isInRed = () => !!(me && me.acc <= GPS_BAD && S.game && S.game.phase === "seek" && inActiveRed(me));
 function checkLeave() {
   const w = $("leaveWarn");
   const active = S.game && (S.game.phase === "hide" || S.game.phase === "seek") && !excluded;
@@ -484,6 +500,7 @@ function refreshStatus() {
   let text = st.text;
   const cz = curZone();
   if (cz) text += ` · до центра ${Math.round(dist(me, cz))} м`;
+  if (me.acc > GPS_BAD) { setBanner("warn", `Слабый сигнал GPS (±${Math.round(me.acc)} м) — штрафов нет, выйдите на открытое место`); lastCode = st.code; return; }
   setBanner(st.code === "ok" ? "ok" : "bad", text);
   const active = S.game && S.game.phase === "hide" && P.role === "hider";
   if (active && st.code !== "ok" && st.code !== lastCode) alertUser();
@@ -498,85 +515,196 @@ const clean = (s, n) => String(s || "").replace(/[\u0000-\u001f<>]/g, "").trim()
 
 function me2player() { return { nick: P.nick, name: P.name, role: P.role }; }
 
+const SAVED = "pryatki.room", HOSTSAVE = "pryatki.hostroom";
+function clearSaved() { try { localStorage.removeItem(SAVED); localStorage.removeItem(HOSTSAVE); } catch(e) {} }
+function saveRoomInfo(code, host) { try { localStorage.setItem(SAVED, JSON.stringify({ code, host, ts: Date.now() })); } catch(e) {} }
+
+let revealWas = false, revealMarkers = [];
+function applyReveal(on, pts) {
+  revealMarkers.forEach(m => map.removeLayer(m)); revealMarkers = [];
+  pts.forEach(p => {
+    const m = L.circleMarker([p.lat, p.lng], { radius: 10, color: "#fff", weight: 3, fillColor: "#e11d48", fillOpacity: 1 }).addTo(map);
+    m.bindTooltip(tipEl(p.nick), { permanent: true, direction: "top" }); revealMarkers.push(m);
+  });
+  if (on && !revealWas) {
+    alertUser();
+    toast(P.role === "seeker" && !excluded ? "👁 Позиции прячущихся показаны на 10 секунд!" : "⚠️ Ваше местоположение видно искателям 10 секунд!");
+  }
+  revealWas = on;
+}
+
 function hostBroadcast() {
   if (!room || !room.isHost) return;
-  const players = [...room.players].map(([id, p]) => ({ id, nick: p.nick, name: p.name, role: p.role, host: id === "host", excluded: !!p.excluded, found: !!p.found, foundBy: p.foundBy || "", foundPos: p.foundPos || null }));
+  const now = Date.now();
+  const players = [...room.players].map(([id, p]) => ({ id, nick: p.nick, name: p.name, role: p.role, host: id === "host",
+    excluded: !!p.excluded, offline: !!p.offline, found: !!p.found, foundBy: p.foundBy || "", foundPos: p.foundPos || null }));
   const shared = {}; SHARED.forEach(k => shared[k] = S[k]);
-  const msg = { t: "state", shared, players, hostNow: Date.now() };
-  room.conns.forEach(c => { try { c.open && c.send({ ...msg, you: c.peer }); } catch(e) {} });
+  const revealOn = !!(room.reveal && now < room.reveal.until);
+  const pts = revealOn ? [...room.players.values()].filter(p => p.role === "hider" && !p.found && !p.excluded && !p.offline && p.pos && now - (p.posAt || 0) < 20000)
+    .map(p => ({ nick: p.nick, lat: p.pos.lat, lng: p.pos.lng })) : [];
+  const msg = { t: "state", shared, players, hostNow: now, revealOn };
+  room.conns.forEach((c, uid) => {
+    try { const pl = room.players.get(uid); c.open && c.send({ ...msg, you: uid, reveal: pl && pl.role === "seeker" && !pl.excluded ? pts : [] }); } catch(e) {}
+  });
   room.list = players; renderRoom();
+  const hp = room.players.get("host");
+  applyReveal(revealOn, hp && hp.role === "seeker" && !excluded ? pts : []);
+  try {
+    localStorage.setItem(HOSTSAVE, JSON.stringify({ code: room.code, players: [...room.players].filter(([id]) => id !== "host")
+      .map(([id, p]) => [id, { nick: p.nick, name: p.name, role: p.role, found: p.found, foundBy: p.foundBy, foundPos: p.foundPos, excluded: p.excluded }]) }));
+  } catch(e) {}
 }
 function pushState() { hostBroadcast(); }
 
-function createRoom() {
+function createRoom(resumeCode, tries) {
+  tries = tries || 0;
   if (typeof Peer === "undefined") return roomMsg("Не удалось загрузить сетевую библиотеку. Проверьте интернет.");
   P.name = clean($("realName").value, 30); saveProfile();
-  roomMsg("Создаю комнату…");
-  const code = genCode();
+  roomMsg(resumeCode ? "Возвращаю вашу комнату…" : "Создаю комнату…");
+  const code = resumeCode || genCode();
   const peer = new Peer(peerId(code));
   peer.on("open", () => {
-    room = { code, isHost: true, peer, conns: new Map(), players: new Map(), list: [] };
+    room = { code, isHost: true, peer, conns: new Map(), byPeer: new Map(), banned: new Set(), players: new Map(), list: [] };
     room.players.set("host", me2player());
+    if (resumeCode) {   // восстанавливаем участников, пока они не переподключились
+      try {
+        const sv = JSON.parse(localStorage.getItem(HOSTSAVE) || "null");
+        if (sv && sv.code === code) sv.players.forEach(([id, p]) => room.players.set(id, { ...p, offline: true }));
+      } catch(e) {}
+    }
+    saveRoomInfo(code, true);
     peer.on("connection", conn => {
       conn.on("data", d => {
         if (!d || typeof d !== "object") return;
         if (d.t === "hello") {
-          if (room.conns.size >= 30) { conn.close(); return; }
-          room.conns.set(conn.peer, conn);
-          room.players.set(conn.peer, { nick: clean(d.nick, 20) || "Игрок", name: clean(d.name, 30),
-            role: S.game && S.game.phase !== "done" ? "seeker" : "hider" });
+          const uid = clean(d.uid, 30) || conn.peer;
+          if (room.banned.has(uid)) { try { conn.send({ t: "kicked" }); } catch(e) {} setTimeout(() => conn.close(), 300); return; }
+          const old = room.players.get(uid);
+          if (!old && room.players.size >= 30) { conn.close(); return; }
+          const prev = room.conns.get(uid); if (prev && prev !== conn) { try { prev.close(); } catch(e) {} }
+          room.conns.set(uid, conn); room.byPeer.set(conn.peer, uid);
+          room.players.set(uid, { ...(old || { role: S.game && S.game.phase !== "done" ? "seeker" : "hider" }),
+            nick: clean(d.nick, 20) || "Игрок", name: clean(d.name, 30), offline: false });
           hostBroadcast();
-        } else if (d.t === "me") {
-          const p = room.players.get(conn.peer); if (!p) return;
-          p.nick = clean(d.nick, 20) || p.nick; p.name = clean(d.name, 30); hostBroadcast();
-        } else if (d.t === "pos") {
-          const p = room.players.get(conn.peer);
-          if (p && isFinite(d.lat) && isFinite(d.lng)) p.pos = { lat: +d.lat, lng: +d.lng };
-        } else if (d.t === "out") {
-          markExcluded(conn.peer);
-        } else if (d.t === "found") {
-          markFound(String(d.id), conn.peer);
+          return;
         }
+        const uid = room.byPeer.get(conn.peer), pl = uid && room.players.get(uid);
+        if (!pl) return;
+        if (d.t === "me") { pl.nick = clean(d.nick, 20) || pl.nick; pl.name = clean(d.name, 30); hostBroadcast(); }
+        else if (d.t === "pos") { if (isFinite(d.lat) && isFinite(d.lng)) { pl.pos = { lat: +d.lat, lng: +d.lng }; pl.posAt = Date.now(); pl.acc = +d.acc || 0; } }
+        else if (d.t === "out") markExcluded(uid);
+        else if (d.t === "found") markFound(String(d.id), uid);
       });
-      const drop = () => { room.conns.delete(conn.peer); room.players.delete(conn.peer); hostBroadcast(); };
+      const drop = () => {
+        const uid = room && room.byPeer.get(conn.peer);
+        if (!uid || room.conns.get(uid) !== conn) return;
+        room.conns.delete(uid);
+        if (S.game && S.game.phase !== "done") { const pl = room.players.get(uid); if (pl) pl.offline = true; } else room.players.delete(uid);
+        hostBroadcast();
+      };
       conn.on("close", drop); conn.on("error", drop);
     });
     onRoomChanged();
     hostBroadcast();
   });
   peer.on("error", err => {
-    if (err.type === "unavailable-id") { try { peer.destroy(); } catch(e) {} createRoom(); }
-    else { roomMsg("Ошибка связи: " + (err.type || err)); }
+    if (err.type === "unavailable-id") {
+      try { peer.destroy(); } catch(e) {}
+      if (!resumeCode) return createRoom();
+      if (tries < 10) setTimeout(() => createRoom(resumeCode, tries + 1), 3000);   // старое соединение ещё не закрылось
+      else { roomMsg("Не удалось вернуть комнату — создайте новую."); clearSaved(); }
+    } else roomMsg("Ошибка связи: " + (err.type || err));
   });
 }
 
-function joinRoom(code) {
+function joinRoom(code, resuming) {
   code = clean(code, 5).toUpperCase();
   if (code.length !== 5) return roomMsg("Введите код из 5 символов.");
   if (typeof Peer === "undefined") return roomMsg("Не удалось загрузить сетевую библиотеку. Проверьте интернет.");
   P.name = clean($("realName").value, 30); saveProfile();
-  roomMsg("Подключаюсь…");
+  roomMsg(resuming ? "Возвращаюсь в комнату…" : "Подключаюсь…");
   const peer = new Peer();
   let joined = false;
-  const fail = t => { roomMsg(t); try { peer.destroy(); } catch(e) {} };
+  const fail = t => { roomMsg(t); if (resuming) clearSaved(); try { peer.destroy(); } catch(e) {} };
   const timer = setTimeout(() => { if (!joined) fail("Комната не отвечает. Проверьте код."); }, 12000);
   peer.on("open", () => {
     const conn = peer.connect(peerId(code), { reliable: true });
     conn.on("open", () => {
       room = { code, isHost: false, peer, conn, players: new Map(), list: [] };
-      conn.send({ t: "hello", ...me2player() }); sharePos();
+      conn.send({ t: "hello", uid: P.uid, ...me2player() }); sharePos();
     });
     conn.on("data", d => {
-      if (!d || d.t !== "state") return;
-      if (!joined) { joined = true; clearTimeout(timer); onRoomChanged(); }
+      if (!d) return;
+      if (d.t === "kicked") { toast("Хозяин удалил вас из комнаты"); return leaveRoom(true); }
+      if (d.t !== "state") return;
+      if (!joined) { joined = true; clearTimeout(timer); saveRoomInfo(code, false); onRoomChanged(); }
       applyRemote(d);
     });
-    conn.on("close", () => { if (room && !room.isHost) { alert("Хозяин вышел — комната закрыта."); leaveRoom(true); } });
+    conn.on("close", () => { if (room && !room.isHost && !room.leaving && room.conn === conn) reconnectGuest(code, 1); });
   });
   peer.on("error", err => {
     clearTimeout(timer);
     if (!joined) fail(err.type === "peer-unavailable" ? "Комната с таким кодом не найдена." : "Ошибка связи: " + (err.type || err));
   });
+}
+
+// связь пропала (закрыли приложение, плохой интернет) — возвращаемся в ту же комнату с тем же статусом
+function reconnectGuest(code, n) {
+  if (!room || room.isHost || room.leaving) return;
+  toast("Связь потеряна — переподключаюсь…");
+  try { room.peer.destroy(); } catch(e) {}
+  const peer = new Peer(); room.peer = peer;
+  let done = false;
+  const next = () => {
+    if (done) return; done = true;
+    try { peer.destroy(); } catch(e) {}
+    if (!room || room.leaving) return;
+    if (n >= 8) { toast("Не удалось вернуться — комната закрыта"); leaveRoom(true); }
+    else setTimeout(() => reconnectGuest(code, n + 1), 3000);
+  };
+  const timer = setTimeout(next, 10000);
+  peer.on("open", () => {
+    const conn = peer.connect(peerId(code), { reliable: true });
+    conn.on("open", () => { done = true; clearTimeout(timer); room.conn = conn; conn.send({ t: "hello", uid: P.uid, ...me2player() }); sharePos(); toast("Вы снова в комнате"); });
+    conn.on("data", d => {
+      if (!d) return;
+      if (d.t === "kicked") { toast("Хозяин удалил вас из комнаты"); return leaveRoom(true); }
+      if (d.t === "state") applyRemote(d);
+    });
+    conn.on("close", () => { if (room && !room.isHost && !room.leaving && room.conn === conn) reconnectGuest(code, 1); });
+  });
+  peer.on("error", () => { clearTimeout(timer); next(); });
+}
+
+// хозяин раз в секунду: вспышка позиций при сужении и автонаходка
+setInterval(() => {
+  if (!room || !room.isHost) return;
+  const g = S.game;
+  if (g && g.phase === "seek" && g.seekStart) {
+    const v = view();
+    if (S.reveal && S.shrink && v.phase === "shrink" && room.lastReveal !== v.stage) { room.lastReveal = v.stage; room.reveal = { until: Date.now() + 10000 }; hostBroadcast(); }
+    if (S.autoFound > 0) autoFound();
+  }
+  if (room.reveal) { if (Date.now() < room.reveal.until) hostBroadcast(); else { room.reveal = null; hostBroadcast(); } }
+}, 1000);
+function autoFound() {
+  const now = Date.now(), ent = [...room.players.entries()];
+  const fresh = p => p.pos && now - (p.posAt || 0) < 15000 && (p.acc || 0) <= 40 && !p.excluded && !p.offline;
+  const seekers = ent.filter(([, p]) => p.role === "seeker" && fresh(p));
+  ent.filter(([, p]) => p.role === "hider" && !p.found && fresh(p)).forEach(([hid, hp]) => {
+    const sk = seekers.find(([, sp]) => dist(sp.pos, hp.pos) <= S.autoFound);
+    if (sk) markFound(hid, sk[0], true);
+  });
+}
+
+function kickPlayer(id, nick) {
+  if (!room || !room.isHost || id === "host") return;
+  if (!confirm(`Удалить «${nick}» из комнаты?`)) return;
+  const c = room.conns.get(id);
+  room.banned.add(id); room.players.delete(id); room.conns.delete(id);
+  if (c) { try { c.send({ t: "kicked" }); } catch(e) {} setTimeout(() => { try { c.close(); } catch(e) {} }, 300); }
+  if (S.game && !hidersLeft() && S.game.phase !== "done") { S.game = { phase: "done", endAt: 0, allFound: true }; save(); renderGame(); }
+  hostBroadcast();
 }
 
 function applyRemote(d) {
@@ -595,6 +723,7 @@ function applyRemote(d) {
     else toast(my.role === "seeker" ? "Ваша роль: ИЩЕТЕ" : "Ваша роль: ПРЯЧЕТЕСЬ");
   }
   const hadGame = !$("game").classList.contains("hidden");
+  applyReveal(!!d.revealOn, d.reveal || []);
   drawZones(); syncInputs(); renderRoom(); refreshStatus();
   if (S.game) { if (!hadGame) { S.myResult = null; keepAwake(); } enterGame(); }
   else if (hadGame) leaveGame();
@@ -637,12 +766,12 @@ function markExcluded(id) {
   hostBroadcast();
 }
 
-function markFound(id, byId) {
+function markFound(id, byId, auto) {
   if (!room || !room.isHost || !S.game || S.game.phase !== "seek") return;
   const p = room.players.get(id), by = room.players.get(byId);
   if (!p || !by || p.role !== "hider" || by.role !== "seeker" || p.excluded || by.excluded) return;
   p.found = true; p.foundBy = by.nick; p.foundPos = p.pos || null; p.role = "seeker";
-  toast(`${p.nick} найден — теперь ищет`);
+  toast(`${p.nick} найден${auto ? " (рядом с искателем)" : ""} — теперь ищет`);
   if (id === "host") { P.role = "seeker"; saveProfile(); syncInputs(); alertUser(); }
   if (!hidersLeft()) {
     S.game = { phase: "done", endAt: 0, allFound: true }; save(); renderGame();
@@ -669,9 +798,9 @@ function drawFound(list) {
 
 function leaveRoom(silent) {
   if (!room) return;
+  room.leaving = true;
   try { room.isHost ? room.peer.destroy() : (room.conn.close(), room.peer.destroy()); } catch(e) {}
-  room = null;
-  if (S.game && !silent) { /* игра остаётся у хозяина/локально */ }
+  room = null; clearSaved(); applyReveal(false, []);
   onRoomChanged();
 }
 
@@ -693,14 +822,14 @@ function onRoomChanged() {
 function renderRoom() {
   if (!room) return;
   const list = room.list || [];
-  const h = list.filter(p => p.role === "hider").length, s = list.length - h;
+  const online = list.filter(p => !p.offline), h = online.filter(p => p.role === "hider").length, s = online.length - h;
   $("roomBar").innerHTML = "";
   const l = document.createElement("span");
   l.textContent = `Комната `; const b = document.createElement("b"); b.textContent = room.code; l.append(b);
   const r = document.createElement("span");
-  r.textContent = `Участников: ${list.length || 1}`;
+  r.textContent = `Участников: ${online.length || 1}`;
   $("roomBar").append(l, r);
-  $("peopleTitle").textContent = `Участники — ${list.length || 1} (прячутся ${h}, ищут ${s})`;
+  $("peopleTitle").textContent = `Участники — ${online.length || 1} (прячутся ${h}, ищут ${s})`;
   const box = $("players"); box.innerHTML = "";
   list.forEach(p => {
     const d = document.createElement("div"); d.className = "pl";
@@ -711,13 +840,17 @@ function renderRoom() {
     left.append(nm);
     if (p.name) { const rn = document.createElement("div"); rn.className = "rn"; rn.textContent = p.name; left.append(rn); }
     const right = document.createElement("span"); right.style.display = "flex"; right.style.alignItems = "center"; right.style.gap = "6px";
-    const tag = document.createElement("span"); tag.className = "tag " + (p.excluded ? "x" : p.found ? "o" : p.role === "hider" ? "h" : "s");
-    tag.textContent = p.excluded ? "исключён" : p.found ? "найден" : p.role === "hider" ? "прячется" : "ищет";
+    const tag = document.createElement("span"); tag.className = "tag " + (p.offline || p.excluded ? "x" : p.found ? "o" : p.role === "hider" ? "h" : "s");
+    tag.textContent = p.offline ? "нет связи" : p.excluded ? "исключён" : p.found ? "найден" : p.role === "hider" ? "прячется" : "ищет";
     if (S.game && S.game.phase === "seek" && P.role === "seeker" && !excluded && p.role === "hider" && !p.excluded) {
       const f = document.createElement("button"); f.className = "small primary"; f.textContent = "Нашёл";
       f.onclick = () => markFoundUI(p.id, p.nick); right.append(f);
     }
     right.append(tag);
+    if (room.isHost && !p.host) {
+      const k = document.createElement("button"); k.className = "small"; k.textContent = "✕"; k.title = "Удалить из комнаты";
+      k.onclick = () => kickPlayer(p.id, p.nick); right.append(k);
+    }
     d.append(left, right); box.append(d);
   });
   drawFound(list);
@@ -757,6 +890,7 @@ function syncInputs() {
   $("forbR").value = S.forbR; $("forbRv").textContent = S.forbR + " м";
   $("hideMin").value = S.hideMin; $("seekMin").value = S.seekMin;
   $("shrinkOn").checked = !!S.shrink; $("stageMin").value = S.stageMin; $("shrinkPct").value = S.shrinkPct;
+  $("revealOn").checked = !!S.reveal; $("autoFound").value = S.autoFound;
   $("redOn").checked = !!S.red; $("redEvery").value = S.redEvery; $("redDur").value = S.redDur; $("redR").value = S.redR;
   $("roleHider").classList.toggle("on", P.role === "hider");
   $("roleSeeker").classList.toggle("on", P.role === "seeker");
@@ -794,19 +928,27 @@ $("forbHere").onclick = () => {
 $("hideMin").onchange = e => { S.hideMin = Math.max(1, +e.target.value || 1); save(); syncInputs(); };
 $("seekMin").onchange = e => { S.seekMin = Math.max(1, +e.target.value || 1); save(); syncInputs(); };
 [["shrinkOn", "shrink", 1], ["redOn", "red", 1], ["stageMin", "stageMin", 1, 30], ["shrinkPct", "shrinkPct", 5, 60],
- ["redEvery", "redEvery", 1, 30], ["redDur", "redDur", 0.5, 10], ["redR", "redR", 20, 500]].forEach(([id, key, lo, hi]) => {
+ ["revealOn", "reveal", 1], ["autoFound", "autoFound", 0, 100], ["redEvery", "redEvery", 1, 30], ["redDur", "redDur", 0.5, 10], ["redR", "redR", 20, 500]].forEach(([id, key, lo, hi]) => {
   $(id).onchange = e => {
     if (e.target.type === "checkbox") S[key] = e.target.checked;
     else S[key] = Math.min(hi, Math.max(lo, +e.target.value || lo));
     save(); syncInputs();
   };
 });
+const PRESETS = {
+  fast:   { hideMin: 3,  seekMin: 15, stageMin: 3, shrinkPct: 30, redEvery: 2, redDur: 1,   shrink: true, red: true },
+  normal: { hideMin: 10, seekMin: 30, stageMin: 4, shrinkPct: 25, redEvery: 3, redDur: 1.5, shrink: true, red: true },
+  long:   { hideMin: 15, seekMin: 60, stageMin: 6, shrinkPct: 20, redEvery: 5, redDur: 2,   shrink: true, red: true }
+};
+document.querySelectorAll("#presets button").forEach(b => b.onclick = () => {
+  Object.assign(S, PRESETS[b.dataset.p]); save(); syncInputs(); toast("Режим применён: " + b.textContent);
+});
 $("roleHider").onclick = () => { P.role = "hider"; saveProfile(); syncInputs(); sendMe(); };
 $("roleSeeker").onclick = () => { P.role = "seeker"; saveProfile(); syncInputs(); sendMe(); };
 
 $("share").onclick = async () => {
   const d = { play: S.play, forbidden: S.forbidden, playR: S.playR, forbR: S.forbR, hideMin: S.hideMin, seekMin: S.seekMin,
-    shrink: S.shrink, stageMin: S.stageMin, shrinkPct: S.shrinkPct, red: S.red, redEvery: S.redEvery, redDur: S.redDur, redR: S.redR };
+    shrink: S.shrink, stageMin: S.stageMin, shrinkPct: S.shrinkPct, red: S.red, redEvery: S.redEvery, redDur: S.redDur, redR: S.redR, autoFound: S.autoFound, reveal: S.reveal };
   const url = location.origin + location.pathname + "#g=" + btoa(unescape(encodeURIComponent(JSON.stringify(d))));
   try {
     if (navigator.share) await navigator.share({ title: "Прятки по городу", url });
@@ -824,7 +966,7 @@ $("gateOk").onclick = () => {
 };
 $("gateNick").onkeydown = e => { if (e.key === "Enter") $("gateOk").click(); };
 $("editNick").onclick = openGate;
-$("createRoom").onclick = createRoom;
+$("createRoom").onclick = () => createRoom();
 $("joinRoom").onclick = () => joinRoom($("joinCode").value);
 $("leaveRoom").onclick = () => { if (confirm("Выйти из комнаты?")) leaveRoom(); };
 $("realNameOn").onchange = e => { P.name = clean(e.target.value, 30); saveProfile(); syncInputs(); sendMe(); };
@@ -854,6 +996,7 @@ $("start").onclick = () => {
   }
   excluded = false; outSince = null;
   S.myResult = null;
+  if (room) { room.lastReveal = -1; room.reveal = null; }
   redSeen = {}; zoneSig = "";
   S.game = { phase: "hide", endAt: Date.now() + S.hideMin * 60000, seed: Math.floor(Math.random() * 2147483647) };
   save(); keepAwake(); enterGame(); alertUser();
@@ -920,7 +1063,11 @@ document.addEventListener("visibilitychange", () => { if (S.game && !document.hi
 setTool("play"); syncInputs(); drawZones(); applyEditable();
 if (playCircle) map.fitBounds(playCircle.getBounds());
 if (S.game) enterGame();
+let savedRoom = null;
+try { savedRoom = JSON.parse(localStorage.getItem(SAVED) || "null"); } catch(e) {}
+const canResume = P.nick && !hashRoom && savedRoom && savedRoom.code && Date.now() - savedRoom.ts < 12 * 3600 * 1000;
 if (!P.nick) openGate();
+else if (canResume) { savedRoom.host ? createRoom(savedRoom.code) : joinRoom(savedRoom.code, true); }
 else if (hashRoom) { $("joinCode").value = hashRoom; joinRoom(hashRoom); hashRoom = null; }
 </script>
 </body>

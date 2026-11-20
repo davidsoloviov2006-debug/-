@@ -84,7 +84,7 @@
 
     <!-- Профиль и комната -->
     <div id="people">
-      <div class="me"><div>Вы: <span class="nick" id="meNick"></span> <span class="hint">· v4</span></div>
+      <div class="me"><div>Вы: <span class="nick" id="meNick"></span> <span class="hint">· v5</span></div>
         <button class="small" id="editNick">Сменить ник</button></div>
 
       <div id="roomOff">
@@ -213,20 +213,16 @@ function status(p) {
 // ---------- карта ----------
 const map = L.map("map", { zoomControl: false }).setView([55.7558, 37.6173], 13);
 L.control.zoom({ position: "topright" }).addTo(map);
-L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
-  maxZoom: 19, subdomains: "abcd", attribution: "&copy; OpenStreetMap &copy; CARTO"
-}).addTo(map);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OpenStreetMap" }).addTo(map);
 
-// кнопки на карте: показать зону / открыть в Apple Картах
+// кнопка на карте: показать зону
 const MapBtns = L.Control.extend({
   options: { position: "topleft" },
   onAdd() {
     const box = L.DomUtil.create("div");
     const z = L.DomUtil.create("a", "mapbtn", box); z.textContent = "🎯"; z.title = "Показать зону"; z.href = "#";
-    const a = L.DomUtil.create("a", "mapbtn", box); a.textContent = "🍎"; a.title = "Открыть в Apple Картах"; a.href = "#";
     L.DomEvent.disableClickPropagation(box);
     z.onclick = e => { e.preventDefault(); fitZone(true); };
-    a.onclick = e => { e.preventDefault(); openAppleMaps(); };
     return box;
   }
 });

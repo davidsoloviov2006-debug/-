@@ -26,6 +26,7 @@ jobs:
           cp -r kbju/. _site/
           mkdir _site/pryatki
           cp -r pryatki/. _site/pryatki/
+          cp pryatki/index.html _site/pryatki/play.html
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

@@ -84,7 +84,7 @@
 
     <!-- Профиль и комната -->
     <div id="people">
-      <div class="me"><div>Вы: <span class="nick" id="meNick"></span> <span class="hint">· v5</span></div>
+      <div class="me"><div>Вы: <span class="nick" id="meNick"></span> <span class="hint">· v6</span></div>
         <button class="small" id="editNick">Сменить ник</button></div>
 
       <div id="roomOff">
@@ -300,7 +300,12 @@ function onPos(pos) {
   sharePos(); checkLeave();
   if (!centered) {
     centered = true;
-    if (playCircle) map.fitBounds(playCircle.getBounds()); else map.setView([me.lat, me.lng], 15);
+    // зоны ещё нет — ставим её вокруг вас, чтобы она сразу была видна на карте
+    if (!S.play && !S.game && isEditor() && !(hashRoom || (room && !room.isHost))) {
+      S.play = { lat: me.lat, lng: me.lng, r: S.playR }; save(); drawZones();
+      toast("Зона поиска поставлена вокруг вас. Тапните по карте, чтобы переместить центр.");
+    }
+    if (playCircle) fitZone(); else map.setView([me.lat, me.lng], 15);
   }
   refreshStatus();
 }

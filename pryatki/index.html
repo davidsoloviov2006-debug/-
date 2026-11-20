@@ -145,6 +145,10 @@
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 "use strict";
+// чистим устаревшие копии этой страницы из кэша (их оставлял служебный файл KBJU)
+if ("caches" in window) caches.keys().then(ks => ks.forEach(async k => {
+  try { const c = await caches.open(k); (await c.keys()).forEach(r => { if (new URL(r.url).pathname.includes("/pryatki/")) c.delete(r); }); } catch(e) {}
+}));
 const $ = id => document.getElementById(id);
 const KEY = "pryatki.v2", PKEY = "pryatki.profile";
 const SHARED = ["play", "forbidden", "playR", "forbR", "hideMin", "seekMin", "game"];

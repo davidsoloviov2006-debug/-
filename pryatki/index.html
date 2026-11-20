@@ -51,6 +51,7 @@
   #leaveWarn{background:#b91c1c;color:#fff;font-weight:700;text-align:center;padding:10px 14px;animation:pulse 1s infinite}
   @keyframes pulse{50%{background:#7f1d1d}}
   .tag.x{background:#7f1d1d}
+  .leaflet-tooltip{font-size:11px;padding:2px 6px;font-weight:600}
   .mapbtn{background:#fff;color:#111;width:36px;height:36px;line-height:36px;text-align:center;font-size:18px;border-radius:8px;border:2px solid rgba(0,0,0,.25);cursor:pointer;margin-bottom:6px;text-decoration:none;display:block}
   #gate{position:fixed;inset:0;background:rgba(2,6,23,.92);display:flex;align-items:center;justify-content:center;z-index:2000;padding:20px}
   #gate .box{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px;width:100%;max-width:360px}
@@ -84,7 +85,7 @@
 
     <!-- Профиль и комната -->
     <div id="people">
-      <div class="me"><div>Вы: <span class="nick" id="meNick"></span> <span class="hint">· v6</span></div>
+      <div class="me"><div>Вы: <span class="nick" id="meNick"></span> <span class="hint">· v7</span></div>
         <button class="small" id="editNick">Сменить ник</button></div>
 
       <div id="roomOff">
@@ -129,6 +130,16 @@
           <input type="range" id="forbR" min="20" max="500" step="10"><span class="val" id="forbRv"></span></div>
         <div class="row"><button id="playHere">Зона поиска вокруг меня</button>
           <button id="forbHere">Запретная зона здесь</button></div>
+
+        <h3>Сужение зоны (как в PUBG)</h3>
+        <div class="row"><label><input type="checkbox" id="shrinkOn"> Синяя зона сужается</label></div>
+        <div class="row"><label>Шаг сужения, мин</label><input type="number" id="stageMin" min="1" max="30"></div>
+        <div class="row"><label>Уменьшение за шаг, %</label><input type="number" id="shrinkPct" min="5" max="60"></div>
+        <div class="row"><label><input type="checkbox" id="redOn"> Красные зоны (прятаться нельзя)</label></div>
+        <div class="row"><label>Красная зона каждые, мин</label><input type="number" id="redEvery" min="1" max="30" step="0.5"></div>
+        <div class="row"><label>Красная активна, мин</label><input type="number" id="redDur" min="0.5" max="10" step="0.5"></div>
+        <div class="row"><label>Радиус красной, м</label><input type="number" id="redR" min="20" max="500" step="10"></div>
+        <p class="hint">Белый круг — безопасная зона, в которую сужается синяя. За 30 с до красной зоны приходит предупреждение. Поиски начинаются после времени на прятки.</p>
       </div>
       <p class="hint" id="zoneSummary"></p>
       <div id="zones"></div>
@@ -147,6 +158,7 @@
       <div id="phase"></div>
       <div id="timer">00:00</div>
       <p class="hint" id="gameHint" style="text-align:center"></p>
+      <p id="zoneInfo" style="text-align:center;font-weight:600;margin:6px 0"></p>
       <div class="row" id="gameBtns"><button id="skip" style="flex:1">Закончить прятки досрочно</button>
         <button id="stop" class="danger" style="flex:1">Остановить игру</button></div>
     </div>
@@ -163,11 +175,12 @@ if ("caches" in window) caches.keys().then(ks => ks.forEach(async k => {
 }));
 const $ = id => document.getElementById(id);
 const KEY = "pryatki.v2", PKEY = "pryatki.profile";
-const SHARED = ["play", "forbidden", "playR", "forbR", "hideMin", "seekMin", "game"];
+const SHARED = ["play", "forbidden", "playR", "forbR", "hideMin", "seekMin", "game", "shrink", "stageMin", "shrinkPct", "red", "redEvery", "redDur", "redR"];
 
 // ---------- состояние ----------
 // S — общее состояние игры (в комнате его задаёт хозяин), P — личный профиль
-let S = { play: null, forbidden: [], playR: 1000, forbR: 100, hideMin: 10, seekMin: 30, game: null, myResult: null };
+let S = { play: null, forbidden: [], playR: 1000, forbR: 100, hideMin: 10, seekMin: 30, game: null, myResult: null,
+           shrink: true, stageMin: 4, shrinkPct: 25, red: true, redEvery: 3, redDur: 1.5, redR: 100 };
 let P = { nick: "", name: "", role: "hider" };
 try { Object.assign(S, JSON.parse(localStorage.getItem(KEY) || "{}")); } catch(e) {}
 try { Object.assign(P, JSON.parse(localStorage.getItem(PKEY) || "{}")); } catch(e) {}
@@ -202,9 +215,70 @@ function dist(a, b) {
   const x = Math.sin(dLat/2)**2 + Math.cos(a.lat*rad) * Math.cos(b.lat*rad) * Math.sin(dLng/2)**2;
   return 2 * R * Math.asin(Math.sqrt(x));
 }
+// ---------- зоны как в PUBG: синяя сужается к белой, красные появляются по расписанию ----------
+// Всё считается из seed и времени начала поисков, поэтому у всех участников одинаково.
+const MIN_R = 60;
+function mulberry32(a) { return function() { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function dest(c, m, bearing) {
+  const d = m / 6371000, rad = Math.PI / 180, la = c.lat * rad, lo = c.lng * rad;
+  const la2 = Math.asin(Math.sin(la) * Math.cos(d) + Math.cos(la) * Math.sin(d) * Math.cos(bearing));
+  const lo2 = lo + Math.atan2(Math.sin(bearing) * Math.sin(d) * Math.cos(la), Math.cos(d) - Math.sin(la) * Math.sin(la2));
+  return { lat: la2 / rad, lng: lo2 / rad };
+}
+const stageSec = () => Math.max(30, S.stageMin * 60);
+let stageCache = { key: "", list: [], rng: null };
+function stageAt(i) {
+  const g = S.game, key = [g.seed, S.play.lat, S.play.lng, S.play.r, S.stageMin, S.shrinkPct].join("|");
+  if (stageCache.key !== key) stageCache = { key, list: [{ lat: S.play.lat, lng: S.play.lng, r: S.play.r }], rng: mulberry32(g.seed | 0) };
+  const l = stageCache.list;
+  while (l.length <= i) {
+    const p = l[l.length - 1], rn = Math.max(MIN_R, p.r * (1 - S.shrinkPct / 100));
+    if (rn >= p.r) { l.push(p); continue; }
+    const ang = stageCache.rng() * 2 * Math.PI, dd = Math.sqrt(stageCache.rng()) * (p.r - rn), c = dest(p, dd, ang);
+    l.push({ lat: c.lat, lng: c.lng, r: rn });
+  }
+  return l[i];
+}
+function dyn(t) {
+  const ss = stageSec(), i = Math.floor(t / ss), a = stageAt(i), b = stageAt(i + 1), within = t - i * ss, wait = ss * 0.7;
+  if (!(b.r < a.r)) return { cur: a, next: null, phase: "min", left: 0 };
+  if (within < wait) return { cur: a, next: b, phase: "wait", left: wait - within };
+  const f = (within - wait) / (ss - wait);
+  return { cur: { lat: a.lat + (b.lat - a.lat) * f, lng: a.lng + (b.lng - a.lng) * f, r: a.r + (b.r - a.r) * f }, next: b, phase: "shrink", left: ss - within };
+}
+const zoneAt = t => S.shrink ? dyn(t).cur : S.play;
+function redsAt(t) {
+  if (!S.red) return [];
+  const per = S.redEvery * 60, dur = S.redDur * 60, out = [];
+  const kmax = Math.floor((t + 30) / per), kmin = Math.max(1, Math.floor((t - dur) / per));
+  for (let k = kmin; k <= kmax; k++) {
+    const act = k * per, pre = act - 30, end = act + dur;
+    if (t < pre || t >= end) continue;
+    const z = zoneAt(pre), rr = Math.min(S.redR, z.r * 0.6), rng = mulberry32((S.game.seed ^ (k * 7919)) | 0);
+    const c = dest(z, Math.sqrt(rng()) * Math.max(0, z.r - rr), rng() * 2 * Math.PI);
+    out.push({ lat: c.lat, lng: c.lng, r: rr, state: t < act ? "soon" : "active", left: t < act ? act - t : end - t });
+  }
+  return out;
+}
+// текущее состояние зон
+function view() {
+  if (!S.play) return null;
+  const g = S.game;
+  if (g && g.phase === "seek" && g.seekStart && (S.shrink || S.red)) {
+    const t = (Date.now() - g.seekStart) / 1000;
+    const d = S.shrink ? dyn(t) : { cur: S.play, next: null, phase: "min", left: 0 };
+    return { cur: d.cur, next: d.next, phase: d.phase, left: d.left, reds: redsAt(t), t };
+  }
+  return { cur: S.play, next: null, phase: "min", left: 0, reds: [], t: 0 };
+}
+const curZone = () => { const v = view(); return v ? v.cur : null; };
+const inActiveRed = p => !!p && P.role === "hider" && view().reds.some(r => r.state === "active" && dist(p, r) <= r.r);
+
 function status(p) {
   if (!p) return { code: "none", text: "Нет геолокации" };
-  if (S.play && dist(p, S.play) > S.play.r) return { code: "outside", text: "Вы за пределами зоны поиска" };
+  const cz = curZone();
+  if (cz && dist(p, cz) > cz.r) return { code: "outside", text: "Вы за пределами синей зоны" };
+  if (S.game && S.game.phase === "seek" && inActiveRed(p)) return { code: "red", text: "Вы в красной зоне — выйдите из неё" };
   const z = S.forbidden.find(z => dist(p, z) <= z.r);
   if (z) return { code: "forbidden", text: "Вы в запретной зоне — здесь прятаться нельзя" };
   return { code: "ok", text: S.play ? "Позиция допустима" : "Позиция допустима (зона поиска не выбрана)" };
@@ -248,26 +322,73 @@ function ring(c, r) {
 
 let playCircle = null, zoneCircles = [], meMarker = null, meAcc = null;
 
-let dimLayer = null, centerMark = null;
+let dimLayer = null, centerMark = null, nextCircle = null, redLayers = [];
+const tipEl = t => { const e = document.createElement("span"); e.textContent = t; return e; };
 function drawZones() {
-  [playCircle, dimLayer, centerMark].forEach(l => l && map.removeLayer(l));
-  playCircle = dimLayer = centerMark = null;
+  [playCircle, dimLayer, centerMark, nextCircle].forEach(l => l && map.removeLayer(l));
+  playCircle = dimLayer = centerMark = nextCircle = null;
+  redLayers.forEach(l => map.removeLayer(l)); redLayers = [];
   zoneCircles.forEach(c => map.removeLayer(c)); zoneCircles = [];
-  if (S.play) {
-    // всё за пределами зоны затемнено — граница видна чётко
-    dimLayer = L.polygon([[[-85, -180], [-85, 180], [85, 180], [85, -180]], ring(S.play, S.play.r)],
+  const v = view();
+  if (v) {
+    const z = v.cur;
+    // всё за пределами синей зоны затемнено — граница видна чётко
+    dimLayer = L.polygon([[[-85, -180], [-85, 180], [85, 180], [85, -180]], ring(z, z.r)],
       { stroke: false, fillColor: "#0f172a", fillOpacity: 0.45, interactive: false }).addTo(map);
-    playCircle = L.circle([S.play.lat, S.play.lng], {
-      radius: S.play.r, color: "#0ea5e9", weight: 5, opacity: 1, fillColor: "#38bdf8", fillOpacity: 0.07, interactive: false
+    playCircle = L.circle([z.lat, z.lng], {
+      radius: z.r, color: "#0ea5e9", weight: 5, opacity: 1, fillColor: "#38bdf8", fillOpacity: 0.07, interactive: false
     }).addTo(map);
-    centerMark = L.circleMarker([S.play.lat, S.play.lng], { radius: 5, color: "#0ea5e9", fillColor: "#fff", fillOpacity: 1, weight: 3, interactive: false }).addTo(map);
-    const lab = document.createElement("span"); lab.textContent = `Зона поиска · радиус ${S.play.r} м`;
-    centerMark.bindTooltip(lab, { permanent: true, direction: "top", offset: [0, -6] });
+    centerMark = L.circleMarker([z.lat, z.lng], { radius: 5, color: "#0ea5e9", fillColor: "#fff", fillOpacity: 1, weight: 3, interactive: false }).addTo(map);
+    if (!(S.game && S.game.phase === "seek")) centerMark.bindTooltip(tipEl(`Зона поиска · радиус ${Math.round(z.r)} м`), { permanent: true, direction: "top", offset: [0, -6] });
+    if (v.next) {
+      nextCircle = L.circle([v.next.lat, v.next.lng], { radius: v.next.r, color: "#ffffff", weight: 4, fill: false, interactive: false }).addTo(map);
+      nextCircle.bindTooltip(tipEl("Безопасная зона"), { permanent: true, direction: "center", className: "" });
+    }
+    v.reds.forEach(r => {
+      const act = r.state === "active";
+      const c = L.circle([r.lat, r.lng], {
+        radius: r.r, color: act ? "#dc2626" : "#f59e0b", fillColor: act ? "#ef4444" : "#f59e0b",
+        fillOpacity: act ? 0.5 : 0.18, weight: 4, dashArray: act ? null : "8 6", interactive: false
+      }).addTo(map);
+      c.bindTooltip(tipEl(act ? "Красная зона — прятаться нельзя" : "Скоро красная зона"), { permanent: true, direction: "center" });
+      redLayers.push(c);
+    });
   }
   S.forbidden.forEach(z => zoneCircles.push(L.circle([z.lat, z.lng], {
     radius: z.r, color: "#dc2626", fillColor: "#ef4444", fillOpacity: 0.35, weight: 3, interactive: false
   }).addTo(map)));
   renderZones();
+}
+// пока идут поиски — перерисовываем зоны, когда они изменились
+let zoneSig = "", redSeen = {};
+function updateZones() {
+  const v = view(); let sig = "static";
+  if (v && S.game && S.game.phase === "seek" && S.game.seekStart) {
+    sig = [v.cur.lat.toFixed(5), v.cur.lng.toFixed(5), Math.round(v.cur.r), v.next ? Math.round(v.next.r) + v.next.lat.toFixed(5) : "",
+      v.reds.map(r => r.state + r.lat.toFixed(5)).join(",")].join("|");
+    v.reds.forEach(r => {
+      const key = r.state + r.lat.toFixed(5) + r.lng.toFixed(5);
+      if (redSeen[key]) return; redSeen[key] = 1;
+      alertUser();
+      toast(r.state === "soon" ? "🔴 Через 30 с появится красная зона!"
+        : P.role === "hider" ? "🔴 Красная зона активна — выйдите из неё!" : "🔴 Красная зона активна");
+    });
+  }
+  if (sig !== zoneSig) { zoneSig = sig; drawZones(); }
+}
+function zoneInfoText() {
+  const g = S.game, v = view();
+  if (!v || !g || g.phase !== "seek" || !g.seekStart || !(S.shrink || S.red)) return "";
+  const out = [], f = sec => fmt(sec * 1000);
+  if (S.shrink) out.push(v.phase === "wait" ? `🔵 Синяя зона сужается через ${f(v.left)}`
+    : v.phase === "shrink" ? `🔵 Зона сужается! Идите в белый круг — ещё ${f(v.left)}` : "🔵 Зона достигла минимума");
+  if (S.red) {
+    const act = v.reds.find(r => r.state === "active"), soon = v.reds.find(r => r.state === "soon");
+    if (act) out.push(`🔴 Красная зона активна ещё ${f(act.left)}`);
+    else if (soon) out.push(`🟠 Красная зона через ${f(soon.left)}`);
+    else { const per = S.redEvery * 60, nk = Math.floor((v.t + 30) / per) + 1; out.push(`🔴 Следующая красная зона через ${f(nk * per - 30 - v.t)}`); }
+  }
+  return out.join("\n");
 }
 function drawMe() {
   if (!me) return;
@@ -333,15 +454,18 @@ function alertUser() {
 // ---------- выход за пределы зоны: 30 секунд на возвращение ----------
 const OUT_LIMIT = 30000;
 let outSince = null, excluded = false, outAlertAt = 0;
-function isOutside() { return !!(me && S.play && dist(me, S.play) > S.play.r + Math.min(me.acc || 0, 30)); }
+function isOutside() { const z = curZone(); return !!(me && z && dist(me, z) > z.r + Math.min(me.acc || 0, 30)); }
+const isInRed = () => !!(me && S.game && S.game.phase === "seek" && inActiveRed(me));
 function checkLeave() {
   const w = $("leaveWarn");
   const active = S.game && (S.game.phase === "hide" || S.game.phase === "seek") && !excluded;
-  if (!active || !isOutside()) { outSince = null; w.classList.add("hidden"); return; }
+  const out = isOutside(), red = !out && isInRed();
+  if (!active || (!out && !red)) { outSince = null; w.classList.add("hidden"); return; }
   if (outSince === null) { outSince = Date.now(); outAlertAt = Date.now(); alertUser(); }
   const left = Math.ceil((OUT_LIMIT - (Date.now() - outSince)) / 1000);
   if (left <= 0) { w.classList.add("hidden"); outSince = null; return gotExcluded(); }
-  w.textContent = `⚠️ Вы вне зоны игры! Вернитесь за ${left} с — иначе вас исключат`;
+  w.textContent = out ? `⚠️ Вы вне синей зоны! Вернитесь за ${left} с — иначе вас исключат`
+    : `🔴 Вы в красной зоне! Выйдите за ${left} с — иначе вас исключат`;
   w.classList.remove("hidden");
   if (Date.now() - outAlertAt > 5000) { outAlertAt = Date.now(); alertUser(); }
 }
@@ -358,7 +482,8 @@ function refreshStatus() {
   if (!me) return;
   const st = status(me);
   let text = st.text;
-  if (S.play) text += ` · до центра ${Math.round(dist(me, S.play))} м`;
+  const cz = curZone();
+  if (cz) text += ` · до центра ${Math.round(dist(me, cz))} м`;
   setBanner(st.code === "ok" ? "ok" : "bad", text);
   const active = S.game && S.game.phase === "hide" && P.role === "hider";
   if (active && st.code !== "ok" && st.code !== lastCode) alertUser();
@@ -458,6 +583,7 @@ function applyRemote(d) {
   const off = d.hostNow - Date.now();           // разница часов с хозяином
   SHARED.forEach(k => { if (k in d.shared) S[k] = d.shared[k]; });
   if (S.game && S.game.endAt) S.game = { ...S.game, endAt: S.game.endAt - off };
+  if (S.game && S.game.seekStart) S.game = { ...S.game, seekStart: S.game.seekStart - off };
   room.list = d.players; room.myId = d.you;
   const my = d.players.find(p => p.id === d.you);
   if (my && my.excluded && !excluded) { excluded = true; alertUser(); $("outBox").classList.remove("hidden"); }
@@ -630,6 +756,8 @@ function syncInputs() {
   $("playR").value = S.playR; $("playRv").textContent = S.playR + " м";
   $("forbR").value = S.forbR; $("forbRv").textContent = S.forbR + " м";
   $("hideMin").value = S.hideMin; $("seekMin").value = S.seekMin;
+  $("shrinkOn").checked = !!S.shrink; $("stageMin").value = S.stageMin; $("shrinkPct").value = S.shrinkPct;
+  $("redOn").checked = !!S.red; $("redEvery").value = S.redEvery; $("redDur").value = S.redDur; $("redR").value = S.redR;
   $("roleHider").classList.toggle("on", P.role === "hider");
   $("roleSeeker").classList.toggle("on", P.role === "seeker");
   $("meNick").textContent = P.nick;
@@ -665,11 +793,20 @@ $("forbHere").onclick = () => {
 };
 $("hideMin").onchange = e => { S.hideMin = Math.max(1, +e.target.value || 1); save(); syncInputs(); };
 $("seekMin").onchange = e => { S.seekMin = Math.max(1, +e.target.value || 1); save(); syncInputs(); };
+[["shrinkOn", "shrink", 1], ["redOn", "red", 1], ["stageMin", "stageMin", 1, 30], ["shrinkPct", "shrinkPct", 5, 60],
+ ["redEvery", "redEvery", 1, 30], ["redDur", "redDur", 0.5, 10], ["redR", "redR", 20, 500]].forEach(([id, key, lo, hi]) => {
+  $(id).onchange = e => {
+    if (e.target.type === "checkbox") S[key] = e.target.checked;
+    else S[key] = Math.min(hi, Math.max(lo, +e.target.value || lo));
+    save(); syncInputs();
+  };
+});
 $("roleHider").onclick = () => { P.role = "hider"; saveProfile(); syncInputs(); sendMe(); };
 $("roleSeeker").onclick = () => { P.role = "seeker"; saveProfile(); syncInputs(); sendMe(); };
 
 $("share").onclick = async () => {
-  const d = { play: S.play, forbidden: S.forbidden, playR: S.playR, forbR: S.forbR, hideMin: S.hideMin, seekMin: S.seekMin };
+  const d = { play: S.play, forbidden: S.forbidden, playR: S.playR, forbR: S.forbR, hideMin: S.hideMin, seekMin: S.seekMin,
+    shrink: S.shrink, stageMin: S.stageMin, shrinkPct: S.shrinkPct, red: S.red, redEvery: S.redEvery, redDur: S.redDur, redR: S.redR };
   const url = location.origin + location.pathname + "#g=" + btoa(unescape(encodeURIComponent(JSON.stringify(d))));
   try {
     if (navigator.share) await navigator.share({ title: "Прятки по городу", url });
@@ -717,7 +854,8 @@ $("start").onclick = () => {
   }
   excluded = false; outSince = null;
   S.myResult = null;
-  S.game = { phase: "hide", endAt: Date.now() + S.hideMin * 60000 };
+  redSeen = {}; zoneSig = "";
+  S.game = { phase: "hide", endAt: Date.now() + S.hideMin * 60000, seed: Math.floor(Math.random() * 2147483647) };
   save(); keepAwake(); enterGame(); alertUser();
 };
 $("skip").onclick = () => { if (S.game && S.game.phase === "hide") toSeek(Date.now()); };
@@ -729,7 +867,8 @@ $("stop").onclick = () => {
 function toSeek(from) {
   const st = status(me);
   S.myResult = P.role === "hider" ? (st.code === "ok" ? "Спрятались корректно" : "Нарушение: " + st.text) : null;
-  S.game = { phase: "seek", endAt: from + S.seekMin * 60000 };
+  S.game = { phase: "seek", endAt: from + S.seekMin * 60000, seed: S.game ? S.game.seed : 1, seekStart: from };
+  zoneSig = ""; updateZones();
   if (isEditor()) save();
   alertUser(); renderGame(); renderRoom();
 }
@@ -748,15 +887,17 @@ function renderGame() {
     alertUser(); return renderGame();
   }
   const hider = P.role === "hider";
+  updateZones();
+  $("zoneInfo").textContent = zoneInfoText(); $("zoneInfo").style.whiteSpace = "pre-line";
   $("skip").classList.toggle("hidden", g.phase !== "hide");
   if (g.phase === "hide") {
     $("phase").textContent = hider ? "Время спрятаться" : "Прячущиеся прячутся — ждите";
     $("timer").textContent = fmt(left);
-    $("gameHint").textContent = hider ? "Не заходите в красные зоны и не покидайте синий круг." : "Поиски начнутся после таймера.";
+    $("gameHint").textContent = hider ? "Спрячьтесь в синей зоне и не заходите в красные. Потом зона начнёт сужаться." : "Поиски начнутся после таймера.";
   } else if (g.phase === "seek") {
     $("phase").textContent = hider ? "Вас ищут" : "Идут поиски";
     $("timer").textContent = fmt(left);
-    $("gameHint").textContent = S.myResult ? "Итог прятания: " + S.myResult : "Ищите в пределах синего круга. Красные зоны — там прятаться было нельзя.";
+    $("gameHint").textContent = S.myResult ? "Итог прятания: " + S.myResult : "Оставайтесь в синей зоне — она сужается к белому кругу.";
   } else {
     $("phase").textContent = g.allFound ? "Игра окончена" : "Время вышло";
     $("timer").textContent = "00:00";
@@ -771,7 +912,7 @@ function enterGame() {
 function leaveGame() {
   $("game").classList.add("hidden"); $("setup").classList.remove("hidden");
   try { wake && wake.release(); } catch(e) {}
-  renderZones(); refreshStatus();
+  zoneSig = ""; drawZones(); refreshStatus();
 }
 document.addEventListener("visibilitychange", () => { if (S.game && !document.hidden) { keepAwake(); renderGame(); } });
 

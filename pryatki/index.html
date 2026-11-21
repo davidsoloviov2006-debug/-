@@ -85,7 +85,7 @@
 
     <!-- Профиль и комната -->
     <div id="people">
-      <div class="me"><div>Вы: <span class="nick" id="meNick"></span> <span class="hint">· v8</span></div>
+      <div class="me"><div>Вы: <span class="nick" id="meNick"></span> <span class="hint">· v9</span></div>
         <button class="small" id="editNick">Сменить ник</button></div>
 
       <div id="roomOff">
@@ -515,6 +515,28 @@ const clean = (s, n) => String(s || "").replace(/[\u0000-\u001f<>]/g, "").trim()
 
 function me2player() { return { nick: P.nick, name: P.name, role: P.role }; }
 
+// ---------- сверка часов с хозяином (по времени ответа, не по отметке в сообщении) ----------
+let clockOff = null, bestRtt = Infinity, usedOff = null;   // usedOff — сдвиг, с которым посчитаны текущие таймеры    // clockOff = часы хозяина − мои часы, мс
+function sendSync() { if (room && !room.isHost && room.conn && room.conn.open) { try { room.conn.send({ t: "sync", c0: Date.now() }); } catch(e) {} } }
+function startSync() { bestRtt = Infinity; clockOff = null; usedOff = null; for (let i = 0; i < 5; i++) setTimeout(sendSync, i * 400); }
+function onSync(d) {
+  const c1 = Date.now(), rtt = c1 - d.c0;
+  if (!(rtt >= 0) || rtt > bestRtt + 150) return;           // берём только самые быстрые замеры
+  bestRtt = Math.min(bestRtt, rtt);
+  const off = d.h - (d.c0 + rtt / 2);
+  if (usedOff !== null && room && !room.isHost && S.game) {  // подвинуть уже посчитанные таймеры
+    const delta = usedOff - off;
+    if (Math.abs(delta) >= 1) {
+      S.game = { ...S.game };
+      if (S.game.endAt) S.game.endAt += delta;
+      if (S.game.seekStart) S.game.seekStart += delta;
+    }
+  }
+  clockOff = off; usedOff = off;
+}
+setInterval(sendSync, 15000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { bestRtt = Infinity; sendSync(); } });
+
 const SAVED = "pryatki.room", HOSTSAVE = "pryatki.hostroom";
 function clearSaved() { try { localStorage.removeItem(SAVED); localStorage.removeItem(HOSTSAVE); } catch(e) {} }
 function saveRoomInfo(code, host) { try { localStorage.setItem(SAVED, JSON.stringify({ code, host, ts: Date.now() })); } catch(e) {} }
@@ -588,6 +610,7 @@ function createRoom(resumeCode, tries) {
           hostBroadcast();
           return;
         }
+        if (d.t === "sync") { try { conn.send({ t: "syncr", c0: d.c0, h: Date.now() }); } catch(e) {} return; }
         const uid = room.byPeer.get(conn.peer), pl = uid && room.players.get(uid);
         if (!pl) return;
         if (d.t === "me") { pl.nick = clean(d.nick, 20) || pl.nick; pl.name = clean(d.name, 30); hostBroadcast(); }
@@ -631,10 +654,11 @@ function joinRoom(code, resuming) {
     const conn = peer.connect(peerId(code), { reliable: true });
     conn.on("open", () => {
       room = { code, isHost: false, peer, conn, players: new Map(), list: [] };
-      conn.send({ t: "hello", uid: P.uid, ...me2player() }); sharePos();
+      conn.send({ t: "hello", uid: P.uid, ...me2player() }); sharePos(); startSync();
     });
     conn.on("data", d => {
       if (!d) return;
+      if (d.t === "syncr") return onSync(d);
       if (d.t === "kicked") { toast("Хозяин удалил вас из комнаты"); return leaveRoom(true); }
       if (d.t !== "state") return;
       if (!joined) { joined = true; clearTimeout(timer); saveRoomInfo(code, false); onRoomChanged(); }
@@ -665,9 +689,10 @@ function reconnectGuest(code, n) {
   const timer = setTimeout(next, 10000);
   peer.on("open", () => {
     const conn = peer.connect(peerId(code), { reliable: true });
-    conn.on("open", () => { done = true; clearTimeout(timer); room.conn = conn; conn.send({ t: "hello", uid: P.uid, ...me2player() }); sharePos(); toast("Вы снова в комнате"); });
+    conn.on("open", () => { done = true; clearTimeout(timer); room.conn = conn; conn.send({ t: "hello", uid: P.uid, ...me2player() }); sharePos(); startSync(); toast("Вы снова в комнате"); });
     conn.on("data", d => {
       if (!d) return;
+      if (d.t === "syncr") return onSync(d);
       if (d.t === "kicked") { toast("Хозяин удалил вас из комнаты"); return leaveRoom(true); }
       if (d.t === "state") applyRemote(d);
     });
@@ -708,7 +733,8 @@ function kickPlayer(id, nick) {
 }
 
 function applyRemote(d) {
-  const off = d.hostNow - Date.now();           // разница часов с хозяином
+  const off = clockOff !== null ? clockOff : d.hostNow - Date.now();   // разница часов с хозяином (запоздавшие сообщения её не меняют)
+  usedOff = off;
   SHARED.forEach(k => { if (k in d.shared) S[k] = d.shared[k]; });
   if (S.game && S.game.endAt) S.game = { ...S.game, endAt: S.game.endAt - off };
   if (S.game && S.game.seekStart) S.game = { ...S.game, seekStart: S.game.seekStart - off };

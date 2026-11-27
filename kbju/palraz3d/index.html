@@ -194,6 +194,8 @@ const st={mode:'night',lux:false,pts:false,zones:false,dims:true,sel:null};
 const lumsBox=document.getElementById('lums');
 LUMS.forEach(l=>{const b=document.createElement('button');b.textContent='גוף '+l.n;b.setAttribute('aria-pressed','true');b.onclick=()=>{l.on=!l.on;select(l.n);apply()};lumsBox.appendChild(b);l.btn=b});
 const $=id=>document.getElementById(id);
+// on narrow (phone) screens the labels overlap, so start with them hidden
+if(window.innerWidth<700){st.dims=false;$('lyDims').checked=false}
 $('mDay').onclick=()=>{st.mode='day';apply()};$('mNight').onclick=()=>{st.mode='night';apply()};
 $('allOn').onclick=()=>{LUMS.forEach(l=>l.on=true);apply()};$('allOff').onclick=()=>{LUMS.forEach(l=>l.on=false);apply()};
 ['lyLux','lyPts','lyZones','lyDims'].forEach(id=>$(id).onchange=e=>{st[{lyLux:'lux',lyPts:'pts',lyZones:'zones',lyDims:'dims'}[id]]=e.target.checked;apply()});

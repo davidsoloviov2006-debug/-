@@ -146,6 +146,7 @@ new THREE.GLTFLoader().load('model.json',g=>{
  model=g.scene;S.add(model);
  model.traverse(o=>{if(!o.isMesh)return;o.castShadow=true;o.receiveShadow=true;const m=o.material,nm=(m.name||'');
   if(nm.startsWith('asphalt')){m.map=noiseTex([60,60,62],34,40);m.color.set(0xffffff);m.roughness=.92;m.needsUpdate=true;o.castShadow=false}
+  if(nm.startsWith('foliage')){if(o.geometry.attributes.uv){m.map=noiseTex([46,82,34],46,8,3);m.color.set(0xffffff)}else m.color.setRGB(0.12,0.26,0.09);m.roughness=.85;m.needsUpdate=true}
   if(nm.startsWith('grass')){m.map=noiseTex([40,70,30],40,60,7);m.color.set(0xffffff);m.needsUpdate=true;o.castShadow=false}
   if(nm.startsWith('road_paint'))o.castShadow=false;
   if(nm.startsWith('led_lens')){o.material=m.clone();o.material.emissive=new THREE.Color(0xfff2dc);lensMats.push(o.material);o.castShadow=false}

@@ -169,7 +169,10 @@ let ST={};
 const drawLux=()=>{const img=lx.createImageData(cw,ch);let mn=1e9,mx=0,sum=0,n=0,F=new Float32Array(cw*ch);
  for(let j=0;j<ch;j++)for(let i=0;i<cw;i++){const e=Ept((i+.5)/PX,7-(j+.5)/PX);F[j*cw+i]=e;mn=Math.min(mn,e);mx=Math.max(mx,e);sum+=e;n++;const c=col(e/VMAX),p=(j*cw+i)*4;img.data[p]=c[0];img.data[p+1]=c[1];img.data[p+2]=c[2];img.data[p+3]=255}
  for(const lev of [10,20,30,40,50,60])for(let j=0;j<ch-1;j++)for(let i=0;i<cw-1;i++){const a=F[j*cw+i]-lev,b=F[j*cw+i+1]-lev,c=F[(j+1)*cw+i]-lev;if(a*b<0||a*c<0){const p=(j*cw+i)*4;const k=lev===REQ?255:20;img.data[p]=k;img.data[p+1]=k;img.data[p+2]=k}}
- lx.putImageData(img,0,0);luxTex.needsUpdate=true;ST={mn,mx,avg:sum/n}};
+ lx.putImageData(img,0,0);luxTex.needsUpdate=true;
+ // statistics on the same 5 cm node grid as the written calculation (edges included)
+ mn=1e9;mx=0;sum=0;n=0;for(let j=0;j<=140;j++)for(let i=0;i<=480;i++){const e=Ept(i*0.05,j*0.05);mn=Math.min(mn,e);mx=Math.max(mx,e);sum+=e;n++}
+ ST={mn,mx,avg:sum/n}};
 // measurement points grid 2 x 1.75 m (cell centres)
 const PTS=[];for(let i=0;i<12;i++)for(let j=0;j<4;j++)PTS.push([1+2*i,0.875+1.75*j]);
 // ===== labels =====
@@ -191,6 +194,8 @@ const st={mode:'night',lux:false,pts:false,zones:false,dims:true,sel:null};
 const lumsBox=document.getElementById('lums');
 LUMS.forEach(l=>{const b=document.createElement('button');b.textContent='גוף '+l.n;b.setAttribute('aria-pressed','true');b.onclick=()=>{l.on=!l.on;select(l.n);apply()};lumsBox.appendChild(b);l.btn=b});
 const $=id=>document.getElementById(id);
+// on narrow (phone) screens the labels overlap, so start with them hidden
+if(window.innerWidth<700){st.dims=false;$('lyDims').checked=false}
 $('mDay').onclick=()=>{st.mode='day';apply()};$('mNight').onclick=()=>{st.mode='night';apply()};
 $('allOn').onclick=()=>{LUMS.forEach(l=>l.on=true);apply()};$('allOff').onclick=()=>{LUMS.forEach(l=>l.on=false);apply()};
 ['lyLux','lyPts','lyZones','lyDims'].forEach(id=>$(id).onchange=e=>{st[{lyLux:'lux',lyPts:'pts',lyZones:'zones',lyDims:'dims'}[id]]=e.target.checked;apply()});
